@@ -1,0 +1,11 @@
+<UserControl x:Class="Clock.Presentation.ClockDetailView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <StackPanel Margin="16" MinWidth="320">
+        <TextBlock Text="{Binding Time}" FontSize="48" FontWeight="SemiBold" Foreground="#E6E8EC"/>
+        <TextBlock Text="{Binding Date}" FontSize="16" Foreground="#9AA3B2"/>
+        <TextBlock Text="Time zone" Margin="0,16,0,4" Foreground="#9AA3B2"/>
+        <ComboBox ItemsSource="{Binding Zones}" SelectedValuePath="Item1" DisplayMemberPath="Item2"
+                  SelectedValue="{Binding ZoneId, Mode=TwoWay}"/>
+    </StackPanel>
+</UserControl>

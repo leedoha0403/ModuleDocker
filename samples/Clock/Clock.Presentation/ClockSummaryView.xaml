@@ -1,0 +1,29 @@
+<sdk:ModeTemplateView x:Class="Clock.Presentation.ClockSummaryView"
+                      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                      xmlns:sdk="clr-namespace:Dora.Widget.SDK;assembly=Dora.Widget.SDK">
+    <sdk:ModeTemplateView.NaturalTemplate>
+        <DataTemplate>
+            <StackPanel Margin="10,8" VerticalAlignment="Center">
+                <TextBlock Text="{Binding Time}" FontSize="30" FontWeight="SemiBold" Foreground="#E6E8EC"/>
+                <TextBlock Text="{Binding Date}" FontSize="12" Foreground="#9AA3B2"/>
+                <TextBlock Text="{Binding ZoneName}" FontSize="11" Foreground="#9AA3B2" TextTrimming="CharacterEllipsis"/>
+            </StackPanel>
+        </DataTemplate>
+    </sdk:ModeTemplateView.NaturalTemplate>
+    <sdk:ModeTemplateView.CompactTemplate>
+        <DataTemplate>
+            <DockPanel Margin="10,0" VerticalAlignment="Center">
+                <TextBlock DockPanel.Dock="Right" Text="{Binding ShortTime}" FontSize="16" FontWeight="SemiBold"
+                           Foreground="#E6E8EC" VerticalAlignment="Center"/>
+                <TextBlock Text="Clock" FontSize="12" Foreground="#9AA3B2" VerticalAlignment="Center"/>
+            </DockPanel>
+        </DataTemplate>
+    </sdk:ModeTemplateView.CompactTemplate>
+    <sdk:ModeTemplateView.CollapsedTemplate>
+        <DataTemplate>
+            <TextBlock Text="{Binding ShortTime}" FontSize="11" Foreground="#E6E8EC" Margin="8,0"
+                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+        </DataTemplate>
+    </sdk:ModeTemplateView.CollapsedTemplate>
+</sdk:ModeTemplateView>

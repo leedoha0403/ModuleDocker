@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\Dora.Widget.Abstractions\Dora.Widget.Abstractions.csproj" />
+    <ProjectReference Include="..\..\..\src\Dora.Widget.SDK\Dora.Widget.SDK.csproj" />
+  </ItemGroup>
+
+</Project>

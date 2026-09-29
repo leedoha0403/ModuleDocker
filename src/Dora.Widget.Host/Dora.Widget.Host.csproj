@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Dora.Widget.Host.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dora.Widget.Abstractions\Dora.Widget.Abstractions.csproj" />
+    <ProjectReference Include="..\Dora.Widget.Runtime\Dora.Widget.Runtime.csproj" />
+    <ProjectReference Include="..\Dora.Widget.SDK\Dora.Widget.SDK.csproj" />
+  </ItemGroup>
+
+  <!-- Sample widgets are built with the Host and dropped into widgets\<name>\ as plugins (never referenced in code). -->
+  <ItemGroup Condition="'$(BundleSamples)' != 'false'">
+    <ProjectReference Include="..\..\samples\Clock\Clock.Widget\Clock.Widget.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\samples\Counter\Counter.Widget\Counter.Widget.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <Target Name="CopySampleWidgets" AfterTargets="Build" Condition="'$(BundleSamples)' != 'false'">
+    <ItemGroup>
+      <ClockFiles Include="..\..\samples\Clock\Clock.Widget\bin\$(Configuration)\net8.0-windows\*.dll" Exclude="..\..\samples\Clock\Clock.Widget\bin\$(Configuration)\net8.0-windows\Dora.*.dll" />
+      <CounterFiles Include="..\..\samples\Counter\Counter.Widget\bin\$(Configuration)\net8.0-windows\*.dll" Exclude="..\..\samples\Counter\Counter.Widget\bin\$(Configuration)\net8.0-windows\Dora.*.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(ClockFiles)" DestinationFolder="$(OutDir)widgets\Clock" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(CounterFiles)" DestinationFolder="$(OutDir)widgets\Counter" SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>
