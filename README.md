@@ -6,10 +6,14 @@ Specs: `MAIN_DOCKER_HOST.md`, `COMPATIBLE_WIDGET_PROCESS_SPEC.md`.
 ```bash
 dotnet build ModuleDock.sln
 dotnet test ModuleDock.sln
-src\Dora.Widget.Host\bin\Debug\net8.0-windows\Dora.Widget.Host.exe
+src\Dora.Widget.Host\bin\Debug\net8.0-windows\ModuleDock.exe
 ```
 
 `.\publish.ps1` produces a runnable folder (`dist\`, Host + bundled widgets; needs the .NET 8 Desktop Runtime).
+
+Releases: bump the version in `src\Dora.Widget.Host\Dora.Widget.Host.csproj`, add `release-notes\vX.Y.Z.md`, commit,
+then push a tag `vX.Y.Z`. GitHub Actions runs `tools\publish-release.ps1` and publishes `ModuleDock.exe`, the zip and
+`SHA256SUMS.txt` (self-contained single file, in-app auto-update). See `SELF_UPDATE_RELEASE_GUIDE.md`.
 
 Stop a running Host before rebuilding (the exe cannot be overwritten while it runs). Run the Host from
 `src\Dora.Widget.Host\bin\...`; the copy under `tests\` has no sample widgets.
