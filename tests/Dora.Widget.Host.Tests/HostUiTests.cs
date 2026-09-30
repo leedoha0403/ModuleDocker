@@ -568,8 +568,12 @@ public class HostUiTests
             var a = rig.Chrome(0);
             rig.Controller.TogglePin(a.InstanceId);
 
+            // The detail opens when the second press is released without having become a drag.
             rig.Controller.PressDown(a, rig.ScreenPointOn(a), 2);
+            Assert.False(rig.Controller.Details.IsOpen(a.InstanceId));
+            rig.Controller.PressUp(a, rig.ScreenPointOn(a));
             rig.Controller.PressDown(a, rig.ScreenPointOn(a), 2);
+            rig.Controller.PressUp(a, rig.ScreenPointOn(a));
             Assert.True(rig.State(a).IsDetailOpen);
             Assert.True(rig.Controller.Details.IsOpen(a.InstanceId));
             Assert.Equal(WidgetInteractionState.Pinned, rig.State(a).InteractionState);

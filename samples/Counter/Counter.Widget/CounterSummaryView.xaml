@@ -9,7 +9,7 @@
                         Command="{Binding IncrementCommand}"/>
                 <Button DockPanel.Dock="Right" Content="-" Width="30" Height="30"
                         Command="{Binding DecrementCommand}"/>
-                <TextBlock Text="{Binding Count}" FontSize="28" FontWeight="SemiBold" Foreground="#F4F7F5"
+                <TextBlock Text="{Binding Count}" FontSize="28" FontWeight="SemiBold" Foreground="{DynamicResource ModuleDock.Brush.Text}"
                            VerticalAlignment="Center"/>
             </DockPanel>
         </DataTemplate>
@@ -18,14 +18,14 @@
         <DataTemplate>
             <DockPanel Margin="10,0" VerticalAlignment="Center">
                 <TextBlock DockPanel.Dock="Right" Text="{Binding Count}" FontSize="16" FontWeight="SemiBold"
-                           Foreground="#F4F7F5"/>
-                <TextBlock Text="Counter" FontSize="12" Foreground="#A9B3BD"/>
+                           Foreground="{DynamicResource ModuleDock.Brush.Text}"/>
+                <TextBlock Text="Counter" FontSize="12" Foreground="{DynamicResource ModuleDock.Brush.Muted}"/>
             </DockPanel>
         </DataTemplate>
     </sdk:ModeTemplateView.CompactTemplate>
     <sdk:ModeTemplateView.CollapsedTemplate>
         <DataTemplate>
-            <TextBlock Text="{Binding Count, StringFormat=#{0}}" FontSize="11" Foreground="#F4F7F5" Margin="8,0"
+            <TextBlock Text="{Binding Count, StringFormat=#{0}}" FontSize="11" Foreground="{DynamicResource ModuleDock.Brush.Text}" Margin="8,0"
                        VerticalAlignment="Center"/>
         </DataTemplate>
     </sdk:ModeTemplateView.CollapsedTemplate>

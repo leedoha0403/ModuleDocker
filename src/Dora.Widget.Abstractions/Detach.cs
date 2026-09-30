@@ -51,4 +51,29 @@ public interface IWidgetDetachHandler
     event Action? DetachEnded;
 
     Task ShutdownAsync();
+
+    /// <summary>
+    /// Asks the handler to look for an external surface that was started on its own (not handed over by the
+    /// Host) and connect to it, so that surface can also be dropped onto the Host. Called when the Host starts
+    /// and again whenever an application announces itself (<see cref="WidgetAnnounce"/>). Must be idempotent and
+    /// must not launch anything. Optional: the default does nothing.
+    /// </summary>
+    Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+}
+
+/// <summary>
+/// Well-known signal for widget applications: set this named event when the application starts. A running Host
+/// then asks its hand-over handlers to look for it (<see cref="IWidgetDetachHandler.StartAsync"/>); with no Host
+/// running the event does not exist and opening it simply fails. Nothing polls.
+/// </summary>
+public static class WidgetAnnounce
+{
+    public const string EventName = "Local\\ModuleDock.WidgetAnnounce";
+
+    /// <summary>
+    /// Event an application signals to have the Host show the widget's detail window instead of opening a second
+    /// main screen of its own while the Host owns the widget.
+    /// </summary>
+    public static string OpenDetailEventName(string widgetId, string announceEventName = EventName) =>
+        announceEventName + ".OpenDetail." + widgetId;
 }

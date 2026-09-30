@@ -2,6 +2,7 @@ using System.IO;
 using System.Windows;
 using Dora.Widget.Abstractions;
 using Dora.Widget.Host.HostWindow;
+using Dora.Widget.Host.Update;
 using Dora.Widget.Runtime;
 using Dora.Widget.Runtime.HostWindow;
 
@@ -14,6 +15,14 @@ public static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        // Replacement helper mode (a temp copy of this exe): must run before any UI or the single-instance lock.
+        if (args.Length == 4 && args[0] == SelfUpdater.ApplyArgument)
+        {
+            SelfUpdater.RunHelper(args);
+            return;
+        }
+        SelfUpdater.CleanupBackup();
+
         var dataDir = DataDirectory(args);
         Directory.CreateDirectory(dataDir);
 
@@ -29,6 +38,12 @@ public static class Program
         }
 
         var app = new Application { ShutdownMode = ShutdownMode.OnMainWindowClose };
+        var settingsStore = new HostSettingsStore(Path.Combine(dataDir, "host-settings.json"));
+        HostTheme.Apply(settingsStore.Load().ThemeMode);
+        HostTheme.Publish(app.Resources);
+        // "System" follows Windows live: re-read the app mode whenever the user changes it.
+        Microsoft.Win32.SystemEvents.UserPreferenceChanged += (_, _) =>
+            app.Dispatcher.BeginInvoke(new Action(HostTheme.RefreshSystem));
         var errors = new ErrorReporter(WriteLog,
             notifyUser: msg => MessageBox.Show(msg, "ModuleDock", MessageBoxButton.OK, MessageBoxImage.Error));
         app.DispatcherUnhandledException += (_, e) =>
@@ -54,7 +69,6 @@ public static class Program
         foreach (var h in detachHandlers) WriteLog($"[Info] hand-over supported for {h.WidgetId}");
 
         // Interaction tuning lives in the same settings file; the options object is shared and read live.
-        var settingsStore = new HostSettingsStore(Path.Combine(dataDir, "host-settings.json"));
         var options = new HostOptions();
         var interaction = settingsStore.LoadInteraction();
         interaction.ApplyTo(options);
@@ -77,6 +91,7 @@ public static class Program
             {
                 try { settingsStore.Save(s); } catch (Exception ex) { WriteLog("[Error] host settings save: " + ex.Message); }
             });
+        controller.AutoGrantInstalledWidgets = () => placement.Machine.Settings.AutoGrantInstalledWidgets;
         window.AttachPlacement(placement);
         window.AttachInteraction(interaction, updated =>
         {
@@ -97,6 +112,7 @@ public static class Program
 
         window.Loaded += async (_, _) =>
         {
+            _ = window.CheckForUpdateAsync(manual: false);
             try { await controller.RestoreAsync(); }
             catch (Exception ex) { errors.Report("restore", ex); }
         };

@@ -14,12 +14,12 @@
                             </Grid.RowDefinitions>
                             <DockPanel>
                                 <TextBlock DockPanel.Dock="Right" Text="{Binding UsedPercent, StringFormat={}{0:0}%}"
-                                           Foreground="#F4F7F5" FontWeight="SemiBold" FontSize="12"/>
-                                <TextBlock Text="{Binding DisplayName}" Foreground="#A9B3BD" FontSize="11"
+                                           Foreground="{DynamicResource ModuleDock.Brush.Text}" FontWeight="SemiBold" FontSize="12"/>
+                                <TextBlock Text="{Binding DisplayName}" Foreground="{DynamicResource ModuleDock.Brush.Muted}" FontSize="11"
                                            TextTrimming="CharacterEllipsis"/>
                             </DockPanel>
                             <ProgressBar Grid.Row="1" Height="6" Minimum="0" Maximum="100" Value="{Binding UsedPercent, Mode=OneWay}"
-                                         Foreground="#3FDDB2" Background="#2A3336" BorderThickness="0" Margin="0,2,0,0"/>
+                                         Foreground="{DynamicResource ModuleDock.Brush.Accent}" Background="{DynamicResource ModuleDock.Brush.Border}" BorderThickness="0" Margin="0,2,0,0"/>
                         </Grid>
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
@@ -30,14 +30,14 @@
         <DataTemplate>
             <DockPanel Margin="10,0" VerticalAlignment="Center">
                 <TextBlock DockPanel.Dock="Right" Text="{Binding WorstText}" FontSize="14" FontWeight="SemiBold"
-                           Foreground="#F4F7F5" VerticalAlignment="Center"/>
-                <TextBlock Text="Disk" FontSize="12" Foreground="#A9B3BD" VerticalAlignment="Center"/>
+                           Foreground="{DynamicResource ModuleDock.Brush.Text}" VerticalAlignment="Center"/>
+                <TextBlock Text="Disk" FontSize="12" Foreground="{DynamicResource ModuleDock.Brush.Muted}" VerticalAlignment="Center"/>
             </DockPanel>
         </DataTemplate>
     </sdk:ModeTemplateView.CompactTemplate>
     <sdk:ModeTemplateView.CollapsedTemplate>
         <DataTemplate>
-            <TextBlock Text="{Binding WorstText}" FontSize="11" Foreground="#F4F7F5" Margin="8,0"
+            <TextBlock Text="{Binding WorstText}" FontSize="11" Foreground="{DynamicResource ModuleDock.Brush.Text}" Margin="8,0"
                        VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
         </DataTemplate>
     </sdk:ModeTemplateView.CollapsedTemplate>

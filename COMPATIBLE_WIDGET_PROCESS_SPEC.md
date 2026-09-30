@@ -303,6 +303,10 @@ The detail view MUST NOT assume it owns the application MainWindow.
 
 The Host decides how the detail view is wrapped in a Window.
 
+A widget whose detail view needs more room than the Host default (640x480) declares it in the manifest
+(optional `PreferredDetailSize` and `MinDetailSize`, DIP). The Host uses them for the detail window it creates,
+clamped to the screen work area. The widget still never creates or sizes the window itself.
+
 ---
 
 # 8. Floating Rules
@@ -682,3 +686,158 @@ AIUsage.Widget
 ```
 
 This keeps future applications compatible with the same Host without coupling their business logic to the Host implementation.
+
+---
+
+# 23. Design and Theme
+
+Every compatible module must inherit the Host theme and follow the shared visual rules (fonts, colors, radius,
+spacing) so that hosted widgets look like one family. The keys, values and checklist are defined in
+`WIDGET_DESIGN_GUIDE.md`; its checklist is part of the compatibility checklist of this document.
+
+The Host offers three theme modes, chosen by the user in the Host settings: **System (recommended, default)**,
+**Dark** and **Light**. System follows the Windows app mode and changes live. Theme is Host-owned: a module never
+selects a theme itself. On a theme change the Host replaces the `ModuleDock.*` resources with new frozen
+objects, so a module must reference them with `DynamicResource` (values read once with `FindResource`, or
+`StaticResource`, go stale; a module that copies them into its own keys re-copies when `ModuleDock.Theme.Token`
+changes), and must stay readable in both palettes.
+
+```text
+[ ] Colors, fonts, radius and padding come from ModuleDock.* theme resources (no hard-coded values)
+[ ] Falls back to identical defaults when the Host theme is absent (standalone use)
+[ ] Readable in both Dark and Light themes and follows a live theme change without being recreated
+```
+
+---
+
+# 24. Summary Content Density (Compact / Normal / Detailed)
+
+A mini widget that has a user-selectable amount of detail (for example "간단히 / 중간 / 자세히") MUST expose it
+as a **feature option** that every surface honors. This is separate from `WidgetDisplayMode`:
+
+```text
+WidgetDisplayMode  (Collapsed / Compact / Natural)  -> chosen by the Host, decides HOW MUCH SPACE the widget gets
+SummaryDensity     (Compact / Normal / Detailed)    -> chosen by the user, decides HOW MUCH CONTENT Natural shows
+```
+
+Rules:
+
+- The density option belongs to the widget's own feature state, not to the Host. It is persisted through
+  `SaveStateAsync` / `RestoreStateAsync` (section 11) and versioned with the rest of the feature state.
+- The same option drives the standalone window and the Host-hosted Natural view. Moving a widget between the
+  standalone app and the Host MUST NOT change what it shows.
+- The option lives on the shared feature ViewModel (section 9), so a change is reflected in the docked, floating
+  and detail surfaces at once.
+- It is changed from the widget's own settings (Detail View), never by the Host. The Host does not know about it.
+- Recommended values and meaning:
+
+```text
+Compact   only the primary value per item (name + main percentage / status)
+Normal    primary value plus the most useful secondary line (default)
+Detailed  everything the original mini widget could show
+```
+
+- `Collapsed` and `Compact` display modes ignore the density option; they always render their fixed minimum content.
+- `NaturalSize` should be declared for the content Natural shows at the default density; when the user picks a
+  denser option the Host may fall back to a smaller display mode or scroll (MAIN_DOCKER_HOST.md), so content must
+  never be clipped silently without a scroll or downgrade.
+
+```text
+[ ] The density option lives in the feature ViewModel and feature state (not in the Host)
+[ ] Standalone window and Host Natural view render the same content for the same density
+[ ] Density is editable from the widget's settings and survives Save/Restore
+```
+
+---
+
+# 25. Instance and Owner Cardinality (MUST be declared)
+
+Every compatible module MUST state explicitly whether it may exist more than once. "Not stated" is not allowed.
+Two questions must both be answered:
+
+```text
+1. Inside the Host:   may the Host hold more than one instance of this widget?   -> WidgetManifest.AllowMultipleInstances
+2. Across homes:      may the widget's surface be shown by the standalone app and by a Host at the same time,
+                      or by several standalone processes at the same time?      -> the module's Owner Policy
+```
+
+## Owner policy values
+
+```text
+SingleOwner       The module's surface (its mini widget) has exactly one live owner in the whole system. The
+                  standalone app and the Host widget are two homes of the same single surface: while one shows it
+                  the other MUST NOT. A start that would create a second owner is refused (or forwarded to the
+                  existing owner), never run in parallel. A helper process kept for the hand-over (for example the
+                  app staying in the tray after its widget was docked) is allowed as long as it does not show the
+                  surface.
+MultiOwner        Several owners may exist at once (standalone + Host, or several standalone processes).
+                  The module must then keep its own data safe under concurrent owners.
+```
+
+Rules:
+
+- `SingleOwner` implies `AllowMultipleInstances = false`. `AllowMultipleInstances = true` with `SingleOwner`
+  is invalid.
+- A `SingleOwner` module enforces this itself with system-wide guards (for example named mutexes) that both the
+  standalone app and the widget use. The Host only refuses a second instance inside itself; it cannot see other
+  processes.
+- The widget refuses to initialize when another owner already shows the surface, except while that owner is handing
+  it over (drop of the app's mini widget onto the Host). The standalone app refuses a plain start while a Host
+  holds the widget; only a Host-started hand-over start may run next to it.
+- A widget declines by throwing `WidgetRefusedException` from `InitializeAsync`. The Host logs it and skips the
+  widget (restore, "+" menu, drop) without an error dialog; any other exception is still reported as an error.
+- Moving between homes (drag out of the Host / drop into the Host) is a hand-over of the one owner
+  (the Host owns docking, section 17), never a copy: the old owner releases before the new one shows the surface.
+- The policy is part of the module's contract: document it in the widget manifest description or README and keep it
+  stable across releases (changing it is a compatibility change).
+
+```text
+[ ] AllowMultipleInstances is explicitly set
+[ ] Owner policy (SingleOwner / MultiOwner) is explicitly declared
+[ ] SingleOwner modules guard system-wide across standalone app and Host widget
+[ ] A start that would create a second owner is refused or forwarded, never run in parallel
+[ ] Hand-over releases the old owner before the new owner shows the surface
+```
+
+## Declared policies of existing modules
+
+```text
+AI Usage (dev.leedoha.aiusage.summary)   SingleOwner   AllowMultipleInstances = false
+```
+
+---
+
+# 26. Host Packaging, Release and Self-Update
+
+The Host is released as a **self-contained single-file exe** (`ModuleDock.exe`) following
+`SELF_UPDATE_RELEASE_GUIDE.md`. This is Host-level only: a compatible module needs no code for it, but must respect
+the layout below so that an update never breaks it.
+
+```text
+ModuleDock.exe            single file, replaced in place by the auto-update (name is fixed)
+widgets\<Name>\*.dll      module plugins, read from next to the exe; never touched by the exe replacement
+%AppData%\ModuleDock\     Host settings, layout, widget state, permissions, host.log (survive updates)
+```
+
+Rules for modules:
+
+```text
+[ ] Read and write only through IWidgetContext / the widget state store; never next to ModuleDock.exe
+[ ] Do not reference the Host's exe or assembly name (it is ModuleDock, not Dora.Widget.Host)
+[ ] Ship as widgets\<Name>\ (the Widget project plus its Core/Presentation DLLs); do NOT copy Dora.Widget.*.dll
+    (the widget must share the Host's copy of the contract types, which live inside the single-file exe)
+```
+
+Release flow (tag `vX.Y.Z` -> `.github/workflows/release.yml` -> `tools/publish-release.ps1`):
+
+| Asset | Purpose |
+|---|---|
+| `ModuleDock.exe` | in-place auto-update (fixed name, hash required in `SHA256SUMS.txt`) |
+| `ModuleDock-vX.Y.Z-win-x64.zip` | first install and manual update: exe plus the bundled sample `widgets\` |
+| `SHA256SUMS.txt` | hashes of the two files above |
+
+The auto-update replaces **only the exe**. Widgets bundled in the zip (Clock, Counter, DiskUsage) are updated by
+unpacking the zip over the install folder; third-party modules such as AI Usage are deployed into `widgets\`
+by their own tooling. The Host checks GitHub on start (silent on failure), shows a header button when a newer
+version exists, and never installs without the user's confirmation. Version is set in
+`src/Dora.Widget.Host/Dora.Widget.Host.csproj` (`Version`, `AssemblyVersion`, `FileVersion`, `InformationalVersion`).

@@ -12,6 +12,7 @@ internal sealed class FakeDetachHandler : IWidgetDetachHandler
     public string WidgetId { get; }
     public bool IsDetached { get; set; }
     public bool ShutdownCalled { get; private set; }
+    public int Starts;
     public List<DetachRequest> Requests { get; } = new();
     public Func<DetachRequest, Task<bool>> OnDetach { get; set; } = _ => Task.FromResult(true);
 
@@ -30,6 +31,12 @@ internal sealed class FakeDetachHandler : IWidgetDetachHandler
     public Task<bool> RaiseDockRequest(DockRequest request) => DockRequested!.Invoke(request);
     public void RaiseHover(WidgetPoint? point) => DockHover?.Invoke(point);
     public void RaiseEnded() => DetachEnded?.Invoke();
+
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        Interlocked.Increment(ref Starts);
+        return Task.CompletedTask;
+    }
 
     public Task ShutdownAsync()
     {
@@ -157,6 +164,25 @@ public class DetachHandoverTests
             WaitFor(() => env.Controller.Runtime.Find(id)!.State.DockState == DockState.Floating);
 
             Assert.Contains(env.Logs, l => l.Contains("pipe exploded"));
+            env.Controller.Floating.CloseAll();
+            env.Window.Close();
+        });
+    }
+
+    [Fact]
+    public void Installed_widgets_are_trusted_and_hand_over_without_any_prompt()
+    {
+        Sta.Run(() =>
+        {
+            var env = Build(allow: false);   // a prompt would be answered "no"...
+            env.Controller.PermissionPrompt = null;   // ...but the real dialog path is taken instead,
+            env.Controller.AutoGrantInstalledWidgets = () => true;   // and it grants silently
+            var id = AddWidget(env);
+
+            env.Controller.ToggleFloat(id);
+            WaitFor(() => env.Handler.Requests.Count == 1);
+
+            Assert.Equal(0, env.Prompts);
             env.Controller.Floating.CloseAll();
             env.Window.Close();
         });
@@ -301,6 +327,71 @@ public class DetachHandoverTests
             Assert.Equal(DockState.Floating, env.Controller.Runtime.Find(id)!.State.DockState);
             env.Controller.Floating.CloseAll();
             env.Window.Close();
+        });
+    }
+
+    [Fact]
+    public void A_widget_removed_in_the_middle_of_a_drag_does_not_break_later_pointer_events()
+    {
+        Sta.Run(() =>
+        {
+            var env = Build(caps: WidgetCapabilities.None);
+            var id = AddWidget(env);
+            var chrome = env.Controller.Panel.Chromes[id];
+            var start = Interop.ScreenBoundsPx(chrome).TopLeft + new System.Windows.Vector(10, 10);
+
+            env.Controller.PressDown(chrome, start, 1);
+            env.Controller.PressMove(chrome, start + new System.Windows.Vector(60, 60), leftPressed: true);   // drag underway
+            env.Controller.RemoveWidgetAsync(id).GetAwaiter().GetResult();                                     // e.g. handed over
+
+            // Pointer events that are still queued for the removed widget must be ignored, not throw.
+            env.Controller.PressMove(chrome, start + new System.Windows.Vector(80, 80), leftPressed: true);
+            env.Controller.PressMove(chrome, start + new System.Windows.Vector(90, 90), leftPressed: false);
+            env.Controller.PressUp(chrome, start);
+            env.Controller.PressDown(chrome, start, 1);
+
+            Assert.Empty(env.Logs.Where(l => l.Contains("Error")));
+            env.Window.Close();
+        });
+    }
+
+    [Fact]
+    public void Handlers_are_started_with_the_host_and_again_whenever_an_application_announces_itself()
+    {
+        Sta.Run(() =>
+        {
+            var name = "Local\\ModuleDock.Test." + Guid.NewGuid().ToString("N");
+            var registry = new WidgetRegistry();
+            var handler = new FakeDetachHandler(WidgetId);
+            var controller = new HostController(registry, new InMemoryWidgetStateStore(), new InMemoryLayoutStore(),
+                detachHandlers: new[] { handler }, announceEventName: name);
+            WaitFor(() => handler.Starts == 1);
+
+            using (var signal = EventWaitHandle.OpenExisting(name)) signal.Set();
+            WaitFor(() => handler.Starts == 2);
+
+            controller.ShutdownAsync().GetAwaiter().GetResult();
+        });
+    }
+
+    [Fact]
+    public void An_application_asks_the_host_for_the_detail_window_instead_of_opening_a_second_main_screen()
+    {
+        Sta.Run(() =>
+        {
+            var name = "Local\\ModuleDock.Test." + Guid.NewGuid().ToString("N");
+            var registry = new WidgetRegistry();
+            registry.Register(() => new TestWidget(WidgetId, multi: false, detail: true, floating: true));
+            var controller = new HostController(registry, new InMemoryWidgetStateStore(), new InMemoryLayoutStore(),
+                detachHandlers: new[] { new FakeDetachHandler(WidgetId) }, announceEventName: name);
+            controller.AddWidgetAsync(WidgetId).GetAwaiter().GetResult();
+            var id = controller.Runtime.Instances.Single().State.InstanceId;
+            Assert.False(controller.Details.IsOpen(id));
+
+            using (var signal = EventWaitHandle.OpenExisting(WidgetAnnounce.OpenDetailEventName(WidgetId, name))) signal.Set();
+            WaitFor(() => controller.Details.IsOpen(id));
+
+            controller.ShutdownAsync().GetAwaiter().GetResult();
         });
     }
 }

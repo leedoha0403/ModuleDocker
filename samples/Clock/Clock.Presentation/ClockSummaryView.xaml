@@ -5,9 +5,9 @@
     <sdk:ModeTemplateView.NaturalTemplate>
         <DataTemplate>
             <StackPanel Margin="10,8" VerticalAlignment="Center">
-                <TextBlock Text="{Binding Time}" FontSize="30" FontWeight="SemiBold" Foreground="#F4F7F5"/>
-                <TextBlock Text="{Binding Date}" FontSize="12" Foreground="#A9B3BD"/>
-                <TextBlock Text="{Binding ZoneName}" FontSize="11" Foreground="#A9B3BD" TextTrimming="CharacterEllipsis"/>
+                <TextBlock Text="{Binding Time}" FontSize="30" FontWeight="SemiBold" Foreground="{DynamicResource ModuleDock.Brush.Text}"/>
+                <TextBlock Text="{Binding Date}" FontSize="12" Foreground="{DynamicResource ModuleDock.Brush.Muted}"/>
+                <TextBlock Text="{Binding ZoneName}" FontSize="11" Foreground="{DynamicResource ModuleDock.Brush.Muted}" TextTrimming="CharacterEllipsis"/>
             </StackPanel>
         </DataTemplate>
     </sdk:ModeTemplateView.NaturalTemplate>
@@ -15,14 +15,14 @@
         <DataTemplate>
             <DockPanel Margin="10,0" VerticalAlignment="Center">
                 <TextBlock DockPanel.Dock="Right" Text="{Binding ShortTime}" FontSize="16" FontWeight="SemiBold"
-                           Foreground="#F4F7F5" VerticalAlignment="Center"/>
-                <TextBlock Text="Clock" FontSize="12" Foreground="#A9B3BD" VerticalAlignment="Center"/>
+                           Foreground="{DynamicResource ModuleDock.Brush.Text}" VerticalAlignment="Center"/>
+                <TextBlock Text="Clock" FontSize="12" Foreground="{DynamicResource ModuleDock.Brush.Muted}" VerticalAlignment="Center"/>
             </DockPanel>
         </DataTemplate>
     </sdk:ModeTemplateView.CompactTemplate>
     <sdk:ModeTemplateView.CollapsedTemplate>
         <DataTemplate>
-            <TextBlock Text="{Binding ShortTime}" FontSize="11" Foreground="#F4F7F5" Margin="8,0"
+            <TextBlock Text="{Binding ShortTime}" FontSize="11" Foreground="{DynamicResource ModuleDock.Brush.Text}" Margin="8,0"
                        VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
         </DataTemplate>
     </sdk:ModeTemplateView.CollapsedTemplate>

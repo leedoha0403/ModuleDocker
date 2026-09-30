@@ -15,7 +15,7 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 
 $repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
-$exe = Join-Path $repo "src\Dora.Widget.Host\bin\$Configuration\net8.0-windows\Dora.Widget.Host.exe"
+$exe = Join-Path $repo "src\Dora.Widget.Host\bin\$Configuration\net8.0-windows\ModuleDock.exe"
 if (-not (Test-Path $exe)) { throw "Host not built: $exe" }
 
 # Only one script may drive the physical mouse at a time (two runs would click into each other's windows and turn

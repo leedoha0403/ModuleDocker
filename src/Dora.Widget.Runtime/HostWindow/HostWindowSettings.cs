@@ -4,6 +4,9 @@ using Dora.Widget.Abstractions;
 
 namespace Dora.Widget.Runtime.HostWindow;
 
+/// <summary>System follows the Windows app mode; Dark / Light force one.</summary>
+public enum HostThemeMode { System, Dark, Light }
+
 /// <summary>
 /// Host window preferences plus the last placement. Host-owned: widgets never see any of this.
 /// Distances (<see cref="SnapDistance"/>, <see cref="HandleThickness"/>) are DIPs and are scaled by
@@ -22,6 +25,15 @@ public sealed record HostWindowSettings
 
     /// <summary>Keep the Host above other windows even while floating (a snapped Host is always on top).</summary>
     public bool AlwaysOnTop { get; init; }
+
+    /// <summary>
+    /// Widgets in the Host's widgets folder were installed by the user, so the capabilities they declare are granted
+    /// without a prompt. Turn off to be asked once per capability instead.
+    /// </summary>
+    public bool AutoGrantInstalledWidgets { get; init; } = true;
+
+    /// <summary>Colour theme of the Host and of the widgets inside it.</summary>
+    public HostThemeMode ThemeMode { get; init; } = HostThemeMode.System;
 
     // ---- last placement ----
     public HostPlacementState PlacementState { get; init; } = HostPlacementState.Floating;

@@ -7,7 +7,19 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\ModuleDock.ico</ApplicationIcon>
+    <!-- exe name = release asset name (ModuleDock.exe): keep in sync with SelfUpdater.ExeAssetName and the release scripts -->
+    <AssemblyName>ModuleDock</AssemblyName>
+    <RootNamespace>Dora.Widget.Host</RootNamespace>
+    <Version>0.1.0</Version>
+    <AssemblyVersion>0.1.0.0</AssemblyVersion>
+    <FileVersion>0.1.0.0</FileVersion>
+    <InformationalVersion>0.1.0-internal</InformationalVersion>
   </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\ModuleDock.ico" LogicalName="ModuleDock.ico" />
+  </ItemGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="Dora.Widget.Host.Tests" />
@@ -21,9 +33,9 @@
 
   <!-- Sample widgets are built with the Host and dropped into widgets\<name>\ as plugins (never referenced in code). -->
   <ItemGroup Condition="'$(BundleSamples)' != 'false'">
-    <ProjectReference Include="..\..\samples\Clock\Clock.Widget\Clock.Widget.csproj" ReferenceOutputAssembly="false" />
-    <ProjectReference Include="..\..\samples\Counter\Counter.Widget\Counter.Widget.csproj" ReferenceOutputAssembly="false" />
-    <ProjectReference Include="..\..\samples\DiskUsage\DiskUsage.Widget\DiskUsage.Widget.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\samples\Clock\Clock.Widget\Clock.Widget.csproj" ReferenceOutputAssembly="false" GlobalPropertiesToRemove="RuntimeIdentifier;SelfContained;PublishSingleFile" />
+    <ProjectReference Include="..\..\samples\Counter\Counter.Widget\Counter.Widget.csproj" ReferenceOutputAssembly="false" GlobalPropertiesToRemove="RuntimeIdentifier;SelfContained;PublishSingleFile" />
+    <ProjectReference Include="..\..\samples\DiskUsage\DiskUsage.Widget\DiskUsage.Widget.csproj" ReferenceOutputAssembly="false" GlobalPropertiesToRemove="RuntimeIdentifier;SelfContained;PublishSingleFile" />
   </ItemGroup>
 
   <Target Name="CopySampleWidgets" AfterTargets="Build" Condition="'$(BundleSamples)' != 'false'">

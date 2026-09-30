@@ -32,6 +32,7 @@ public sealed class HostController
     private readonly IWidgetStateStore _stateStore;
     private readonly Dictionary<string, IWidgetDetachHandler> _detachHandlers = new();
     private readonly HashSet<string> _detaching = new();
+    private readonly CancellationTokenSource _handlerCts = new();
     private readonly Dispatcher _ui = Dispatcher.CurrentDispatcher;
 
     // drag session
@@ -47,7 +48,8 @@ public sealed class HostController
         Action<string>? log = null,
         IPermissionGrantStore? grants = null,
         IMonitorProvider? monitors = null,
-        IEnumerable<IWidgetDetachHandler>? detachHandlers = null)
+        IEnumerable<IWidgetDetachHandler>? detachHandlers = null,
+        string? announceEventName = null)
     {
         _log = log;
         _stateStore = stateStore;
@@ -72,6 +74,7 @@ public sealed class HostController
         Details = new DetailWindowManager(_runtime, _machine);
 
         _machine.StateChanged += OnStateChanged;
+        _announceEventName = announceEventName ?? WidgetAnnounce.EventName;
         RegisterDetachHandlers(detachHandlers);
 
         _saveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
@@ -101,8 +104,16 @@ public sealed class HostController
     /// <summary>Asks the user whether a widget may use a declared capability; replaced in tests.</summary>
     public Func<WidgetManifest, WidgetCapabilities, Task<bool>>? PermissionPrompt { get; set; }
 
+    /// <summary>When it returns true, declared capabilities are granted without asking (widgets the user installed).</summary>
+    public Func<bool>? AutoGrantInstalledWidgets { get; set; }
+
     private Task<bool> DefaultPermissionPrompt(WidgetManifest manifest, WidgetCapabilities caps)
     {
+        if (AutoGrantInstalledWidgets?.Invoke() == true)
+        {
+            _log?.Invoke($"[Info] granted {caps} to {manifest.Id} (installed widgets are trusted)");
+            return Task.FromResult(true);
+        }
         var dispatcher = Application.Current?.Dispatcher;
         if (dispatcher is null) return Task.FromResult(false);
         return dispatcher.InvokeAsync(() =>
@@ -148,6 +159,7 @@ public sealed class HostController
                 continue;
             }
             try { await CreateAsync(e.WidgetId, e.InstanceId); }
+            catch (WidgetRefusedException ex) { _log?.Invoke($"[Info] restore {e.WidgetId}: the widget declined ({ex.Message})"); }
             catch (Exception ex) { _log?.Invoke($"[Error] restore {e.WidgetId}: {ex.Message}"); }
         }
 
@@ -165,7 +177,13 @@ public sealed class HostController
 
     public async Task AddWidgetAsync(string widgetId)
     {
-        var chrome = await CreateAsync(widgetId, null);
+        WidgetChrome chrome;
+        try { chrome = await CreateAsync(widgetId, null); }
+        catch (WidgetRefusedException ex)
+        {
+            _log?.Invoke($"[Info] {widgetId}: not added, the widget declined ({ex.Message})");
+            return;
+        }
         _model.AttachDocked(chrome.InstanceId);
         Panel.Add(chrome);
         ScheduleSave();
@@ -197,6 +215,7 @@ public sealed class HostController
     public async Task RemoveWidgetAsync(string instanceId)
     {
         if (!_chromes.Remove(instanceId, out var chrome)) return;
+        AbandonGestureOf(chrome);
         Details.Close(instanceId);
         Floating.Release(instanceId);
         Panel.Remove(chrome);
@@ -212,6 +231,15 @@ public sealed class HostController
         SaveLayoutNow();
         Details.CloseAll();
         Floating.CloseAll();
+        _handlerCts.Cancel();
+        _announceWait?.Unregister(null);
+        _announce?.Dispose();
+        foreach (var (signal, wait) in _openDetailWaits)
+        {
+            wait.Unregister(null);
+            signal.Dispose();
+        }
+        _openDetailWaits.Clear();
         await _runtime.ShutdownAsync();
         foreach (var handler in _detachHandlers.Values)
         {
@@ -249,7 +277,63 @@ public sealed class HostController
             handler.DockRequested += request => _ui.InvokeAsync(() => DockFromExternalAsync(widgetId, request)).Task.Unwrap();
             handler.DockHover += point => _ui.BeginInvoke(new Action(() => ShowExternalDockHint(widgetId, point)));
             handler.DetachEnded += () => _log?.Invoke($"[Info] {widgetId}: the external application ended without docking");
+
+            // Events are wired, so the handler may now connect to an application that was started on its own.
+            _ = StartHandlerAsync(handler);
         }
+        if (_detachHandlers.Count > 0) ListenForAnnouncements();
+        foreach (var widgetId in _detachHandlers.Keys) ListenForOpenDetail(widgetId);
+    }
+
+    private readonly string _announceEventName;
+    private EventWaitHandle? _announce;
+    private RegisteredWaitHandle? _announceWait;
+
+    // Applications signal WidgetAnnounce.EventName when they start; every handler then looks for its application once.
+    private void ListenForAnnouncements()
+    {
+        try
+        {
+            _announce = new EventWaitHandle(false, EventResetMode.AutoReset, _announceEventName);
+            _announceWait = ThreadPool.RegisterWaitForSingleObject(_announce, (_, timedOut) =>
+            {
+                if (timedOut || _handlerCts.IsCancellationRequested) return;
+                foreach (var handler in _detachHandlers.Values.ToList()) _ = StartHandlerAsync(handler);
+            }, null, Timeout.Infinite, executeOnlyOnce: false);
+        }
+        catch (Exception ex) { _log?.Invoke($"[Warn] widget announcements unavailable: {ex.Message}"); }
+    }
+
+    private readonly List<(EventWaitHandle Event, RegisteredWaitHandle Wait)> _openDetailWaits = new();
+
+    // An application whose widget the Host owns asks for the detail window here rather than opening its own main
+    // screen: there is exactly one main screen per widget.
+    private void ListenForOpenDetail(string widgetId)
+    {
+        try
+        {
+            var signal = new EventWaitHandle(false, EventResetMode.AutoReset, WidgetAnnounce.OpenDetailEventName(widgetId, _announceEventName));
+            var wait = ThreadPool.RegisterWaitForSingleObject(signal, (_, timedOut) =>
+            {
+                if (timedOut || _handlerCts.IsCancellationRequested) return;
+                _ui.BeginInvoke(new Action(() => OpenDetailOfWidget(widgetId)));
+            }, null, Timeout.Infinite, executeOnlyOnce: false);
+            _openDetailWaits.Add((signal, wait));
+        }
+        catch (Exception ex) { _log?.Invoke($"[Warn] open-detail requests unavailable for {widgetId}: {ex.Message}"); }
+    }
+
+    private void OpenDetailOfWidget(string widgetId)
+    {
+        var id = _chromes.Values.FirstOrDefault(c => c.Instance.Manifest.Id == widgetId)?.InstanceId;
+        if (id != null) OpenDetail(id);
+    }
+
+    private async Task StartHandlerAsync(IWidgetDetachHandler handler)
+    {
+        try { await handler.StartAsync(_handlerCts.Token); }
+        catch (OperationCanceledException) { /* the Host is shutting down */ }
+        catch (Exception ex) { _log?.Invoke($"[Error] detach handler {handler.WidgetId} could not start: {ex.Message}"); }
     }
 
     // Only widgets that declared ProcessExecution (the hand-over starts another program) and have a handler.
@@ -307,6 +391,8 @@ public sealed class HostController
     }
 
     // The application's window was dropped on the Host: recreate the widget from its state, at the drop position.
+    private string? _pendingDetail;
+
     private async Task<bool> DockFromExternalAsync(string widgetId, DockRequest request)
     {
         if (!_registry.TryGetManifest(widgetId, out var manifest)) return false;
@@ -481,8 +567,9 @@ public sealed class HostController
     private void Wire(WidgetChrome chrome)
     {
         var id = chrome.InstanceId;
-        chrome.MouseEnter += (_, _) => _machine.PointerEnter(id);
-        chrome.MouseLeave += (_, _) => { if (_dragChrome != chrome) _machine.PointerLeave(id); };
+        // A removed widget still gets a late MouseLeave from WPF's deferred mouse-over update; it is no longer known.
+        chrome.MouseEnter += (_, _) => { if (_chromes.ContainsKey(id)) _machine.PointerEnter(id); };
+        chrome.MouseLeave += (_, _) => { if (_dragChrome != chrome && _chromes.ContainsKey(id)) _machine.PointerLeave(id); };
         chrome.PreviewMouseLeftButtonDown += OnChromeDown;
         chrome.PreviewMouseMove += OnChromeMove;
         chrome.PreviewMouseLeftButtonUp += OnChromeUp;
@@ -545,14 +632,12 @@ public sealed class HostController
     internal void PressDown(WidgetChrome chrome, Point cursor, int clickCount)
     {
         var id = chrome.InstanceId;
+        if (!_chromes.ContainsKey(id)) return; // removed while events were still in flight
         _machine.Click(id);
 
-        if (clickCount >= 2)
-        {
-            _drag.Cancel();
-            OpenDetail(id);
-            return;
-        }
+        // A double-click opens the detail on release, and only when the press did not turn into a drag: a quick
+        // second press of a drag back and forth (a widget that just changed owner) must not open a window.
+        _pendingDetail = clickCount >= 2 ? id : null;
 
         var docked = _machine.Get(id).DockState == DockState.Docked;
         _drag.PointerDown(id, cursor.X, cursor.Y, docked);
@@ -560,6 +645,7 @@ public sealed class HostController
 
     internal void PressMove(WidgetChrome chrome, Point cursor, bool leftPressed)
     {
+        if (!_chromes.ContainsKey(chrome.InstanceId)) return; // removed while events were still in flight
         if (_drag.InstanceId != chrome.InstanceId) return;
 
         if (!leftPressed)
@@ -581,8 +667,26 @@ public sealed class HostController
 
     internal void PressUp(WidgetChrome chrome, Point cursor)
     {
+        var id = chrome.InstanceId;
+        var openDetail = _pendingDetail == id && _dragChrome != chrome && _drag.Phase == DragPhase.Pending;
+        _pendingDetail = null;
         if (_dragChrome == chrome) FinishDrag(chrome, cursor, commit: true);
-        else if (_drag.InstanceId == chrome.InstanceId) _drag.Cancel();
+        else if (_drag.InstanceId == id) _drag.Cancel();
+        if (openDetail) OpenDetail(id);
+    }
+
+    // Ends any drag in progress on a chrome that is going away, so later pointer events find no half-finished gesture.
+    private void AbandonGestureOf(WidgetChrome chrome)
+    {
+        if (_dragChrome == chrome)
+        {
+            _dragChrome = null;
+            HideGhost();
+            Mouse.OverrideCursor = null;
+            DragActivityChanged?.Invoke(false, false);
+            if (chrome.IsMouseCaptured) chrome.ReleaseMouseCapture();
+        }
+        if (_drag.InstanceId == chrome.InstanceId) _drag.Cancel();
     }
 
     private void StartDrag(WidgetChrome chrome, Point cursor)
@@ -655,7 +759,7 @@ public sealed class HostController
     private void ShowGhost(WidgetChrome chrome, Point cursor)
     {
         var natural = chrome.Instance.Manifest.Layout.NaturalSize;
-        _ghost ??= new DetachGhostWindow(chrome.Instance.Manifest.Name, natural);
+        _ghost ??= new DetachGhostWindow(chrome.Instance.Manifest.Name, natural, chrome);
         var dpi = DpiAt(cursor);
         _ghost.MoveToPx(new WidgetRect(cursor.X - _grab.X, cursor.Y - _grab.Y, natural.Width * dpi, natural.Height * dpi));
     }

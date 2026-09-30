@@ -19,6 +19,7 @@ public sealed class FloatingWindow : Window
         SizeToContent = SizeToContent.Manual;
         Background = HostBrushes.Background;
         Title = chrome.Instance.Manifest.Name;
+        Icon = HostIcon.Frame;
         Content = chrome;
     }
 
@@ -142,16 +143,25 @@ public sealed class DetailWindowManager
         catch (Exception ex) { view = new TextBlock { Text = "Detail view failed: " + ex.Message, Margin = new Thickness(12), TextWrapping = TextWrapping.Wrap }; }
         if (view is null) return;
 
+        // The widget may declare the size its detail view needs; never larger than the screen's work area.
+        var preferred = instance.Manifest.PreferredDetailSize ?? new WidgetSize(640, 480);
+        var minimum = instance.Manifest.MinDetailSize ?? new WidgetSize(0, 0);
+        var work = SystemParameters.WorkArea;
         var window = new Window
         {
             Title = instance.Manifest.Name,
-            Width = 640,
-            Height = 480,
+            Icon = HostIcon.Frame,
+            Width = Math.Min(preferred.Width, work.Width),
+            Height = Math.Min(preferred.Height, work.Height),
+            MinWidth = Math.Min(minimum.Width, work.Width),
+            MinHeight = Math.Min(minimum.Height, work.Height),
             Background = HostBrushes.Background,
             Foreground = HostBrushes.Text,
             Content = view is UIElement ? view : new ContentPresenter { Content = view },
             WindowStartupLocation = WindowStartupLocation.CenterScreen
         };
+        // The system title bar follows the Host theme instead of clashing with it.
+        Interop.FollowTheme(window);
         window.Closed += (_, _) =>
         {
             _windows.Remove(id);
@@ -188,7 +198,7 @@ public sealed class DetachGhostWindow : Window
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern int SetWindowLong(IntPtr hwnd, int index, int value);
 
-    public DetachGhostWindow(string title, WidgetSize size)
+    public DetachGhostWindow(string title, WidgetSize size, UIElement? preview = null)
     {
         WindowStyle = WindowStyle.None;
         AllowsTransparency = true;
@@ -206,13 +216,24 @@ public sealed class DetachGhostWindow : Window
             BorderThickness = new Thickness(2),
             BorderBrush = HostBrushes.Detach,
             Background = HostBrushes.Surface,
-            Child = new TextBlock
-            {
-                Text = title,
-                Foreground = HostBrushes.Text,
-                Margin = new Thickness(10, 8, 10, 8),
-                TextTrimming = TextTrimming.CharacterEllipsis
-            }
+            // A live snapshot of the widget as it looks now, so the content does not vanish while it is dragged out.
+            Child = preview != null
+                ? new System.Windows.Shapes.Rectangle
+                {
+                    Fill = new System.Windows.Media.VisualBrush(preview)
+                    {
+                        Stretch = System.Windows.Media.Stretch.None,
+                        AlignmentX = System.Windows.Media.AlignmentX.Left,
+                        AlignmentY = System.Windows.Media.AlignmentY.Top
+                    }
+                }
+                : new TextBlock
+                {
+                    Text = title,
+                    Foreground = HostBrushes.Text,
+                    Margin = new Thickness(10, 8, 10, 8),
+                    TextTrimming = TextTrimming.CharacterEllipsis
+                }
         };
         SourceInitialized += (_, _) =>
         {

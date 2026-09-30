@@ -79,6 +79,19 @@ public sealed record WidgetManifest
     public string? Author { get; init; }
     public string? IconKey { get; init; }
     public string? Category { get; init; }
+
+    /// <summary>Preferred / minimum size of the detail window the Host opens (DIP). Null = Host default.</summary>
+    public WidgetSize? PreferredDetailSize { get; init; }
+    public WidgetSize? MinDetailSize { get; init; }
+}
+
+/// <summary>
+/// Thrown from InitializeAsync when the widget deliberately declines to exist right now (for example another owner
+/// already shows its surface). The Host logs it and skips the widget without an error dialog.
+/// </summary>
+public sealed class WidgetRefusedException : Exception
+{
+    public WidgetRefusedException(string message) : base(message) { }
 }
 
 public static class ContractInfo

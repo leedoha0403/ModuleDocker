@@ -4,7 +4,7 @@
     <DockPanel Margin="16" MinWidth="420">
         <DockPanel DockPanel.Dock="Top" Margin="0,0,0,10">
             <Button DockPanel.Dock="Right" Content="Refresh" Padding="10,3" Command="{Binding RefreshCommand}"/>
-            <TextBlock Text="{Binding Status}" Foreground="#A9B3BD" VerticalAlignment="Center"/>
+            <TextBlock Text="{Binding Status}" Foreground="{DynamicResource ModuleDock.Brush.Muted}" VerticalAlignment="Center"/>
         </DockPanel>
         <ListBox ItemsSource="{Binding Drives}" SelectedItem="{Binding Selected, Mode=TwoWay}"
                  Background="Transparent" BorderThickness="0" HorizontalContentAlignment="Stretch">
@@ -13,12 +13,12 @@
                     <StackPanel Margin="0,4">
                         <DockPanel>
                             <TextBlock DockPanel.Dock="Right" Text="{Binding UsedPercent, StringFormat={}{0:0.#}%}"
-                                       Foreground="#F4F7F5" FontWeight="SemiBold"/>
-                            <TextBlock Text="{Binding DisplayName}" Foreground="#F4F7F5"/>
+                                       Foreground="{DynamicResource ModuleDock.Brush.Text}" FontWeight="SemiBold"/>
+                            <TextBlock Text="{Binding DisplayName}" Foreground="{DynamicResource ModuleDock.Brush.Text}"/>
                         </DockPanel>
                         <ProgressBar Height="8" Minimum="0" Maximum="100" Value="{Binding UsedPercent, Mode=OneWay}"
-                                     Foreground="#3FDDB2" Background="#2A3336" BorderThickness="0" Margin="0,3,0,2"/>
-                        <TextBlock Text="{Binding Usage}" Foreground="#A9B3BD" FontSize="11"/>
+                                     Foreground="{DynamicResource ModuleDock.Brush.Accent}" Background="{DynamicResource ModuleDock.Brush.Border}" BorderThickness="0" Margin="0,3,0,2"/>
+                        <TextBlock Text="{Binding Usage}" Foreground="{DynamicResource ModuleDock.Brush.Muted}" FontSize="11"/>
                     </StackPanel>
                 </DataTemplate>
             </ListBox.ItemTemplate>

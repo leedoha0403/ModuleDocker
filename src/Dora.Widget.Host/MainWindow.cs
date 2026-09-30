@@ -6,6 +6,7 @@ using System.Windows.Media;
 using System.Windows.Shapes;
 using Dora.Widget.Abstractions;
 using Dora.Widget.Host.HostWindow;
+using Dora.Widget.Host.Update;
 using Dora.Widget.Runtime.HostWindow;
 
 namespace Dora.Widget.Host;
@@ -29,6 +30,9 @@ public sealed class MainWindow : Window
     private readonly HostController _controller;
     private readonly TextBlock _subtitle;
     private readonly Button _fold;
+    private readonly Button _update;
+    private UpdateRelease? _availableUpdate;
+    private bool _updating;
     private HostWindowController? _placement;
     private HostInteractionSettings _interaction = new();
     private Action<HostInteractionSettings>? _applyInteraction;
@@ -37,6 +41,7 @@ public sealed class MainWindow : Window
     {
         _controller = controller;
         Title = "ModuleDock";
+        Icon = HostIcon.Frame;
         Width = 330;
         Height = 560;
         MinWidth = BaseMinWidth;
@@ -61,6 +66,9 @@ public sealed class MainWindow : Window
         _fold = HostStyles.MakeButton("", "", (_, _) => _placement?.ToggleFold());
         _fold.Margin = new Thickness(0, 0, 6, 0);
         _fold.Visibility = Visibility.Collapsed;
+        _update = HostStyles.MakeButton("⬆", "", (_, _) => _ = InstallUpdateAsync());
+        _update.Margin = new Thickness(0, 0, 6, 0);
+        _update.Visibility = Visibility.Collapsed;
         var add = HostStyles.MakeButton("＋", "위젯 추가", (_, _) => ShowAddMenu());
         add.Margin = new Thickness(0, 0, 6, 0);
         var settings = HostStyles.MakeButton("⚙", "창 설정 (스냅 / 자동 숨김)", (_, _) => ShowSettings());
@@ -68,6 +76,7 @@ public sealed class MainWindow : Window
         var close = HostStyles.MakeButton("×", "종료", (_, _) => Close());
 
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        buttons.Children.Add(_update);
         buttons.Children.Add(_fold);
         buttons.Children.Add(add);
         buttons.Children.Add(settings);
@@ -118,26 +127,27 @@ public sealed class MainWindow : Window
         UpdateSubtitle();
     }
 
-    /// <summary>Rounded dark-teal square with three rising bars.</summary>
+    /// <summary>Rounded dark-teal square: a screen outline with a docked column of three cards (same as the app icon).</summary>
     private static FrameworkElement BuildIcon()
     {
-        var bars = new StackPanel
+        var canvas = new Canvas { Width = 30, Height = 30 };
+        canvas.Children.Add(new Rectangle
         {
-            Orientation = Orientation.Horizontal,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center
-        };
-        foreach (var h in new double[] { 7, 12, 17 })
-            bars.Children.Add(new Rectangle
+            Width = 8, Height = 18, RadiusX = 2, RadiusY = 2, Stroke = HostBrushes.Focus, StrokeThickness = 1.5,
+            Margin = new Thickness(5, 6, 0, 0)
+        });
+        var opacities = new[] { 1.0, 0.66, 0.4 };
+        for (var i = 0; i < 3; i++)
+            canvas.Children.Add(new Rectangle
             {
-                Width = 4, Height = h, RadiusX = 1.5, RadiusY = 1.5, Fill = HostBrushes.Focus,
-                Margin = new Thickness(1.5, 0, 1.5, 0), VerticalAlignment = VerticalAlignment.Bottom
+                Width = 9, Height = 4.6, RadiusX = 1.5, RadiusY = 1.5, Fill = HostBrushes.Focus, Opacity = opacities[i],
+                Margin = new Thickness(16, 6 + i * 6.7, 0, 0)
             });
         return new Border
         {
             Width = 30, Height = 30, CornerRadius = new CornerRadius(8), Background = HostBrushes.IconBack,
             Margin = new Thickness(0, 0, 9, 0), VerticalAlignment = VerticalAlignment.Center,
-            Child = bars
+            Child = canvas
         };
     }
 
@@ -220,12 +230,57 @@ public sealed class MainWindow : Window
         if (_placement == null) return;
         using (_controller.Popups.Scope())
         {
-            var dlg = new HostSettingsWindow(_placement.Machine.Settings, _interaction) { Owner = this };
+            var dlg = new HostSettingsWindow(_placement.Machine.Settings, _interaction, () => CheckForUpdateAsync(manual: true)) { Owner = this };
             if (dlg.ShowDialog() != true) return;
             _placement.Machine.ApplySettings(dlg.Result);
+            HostTheme.Apply(dlg.Result.ThemeMode);
             _interaction = dlg.InteractionResult.Sanitized();
             _applyInteraction?.Invoke(_interaction);
         }
+    }
+
+    /// <summary>
+    /// Looks for a newer release. Shows the header update button when there is one; returns a one-line status
+    /// for the settings window. A silent startup check never interrupts the user.
+    /// </summary>
+    public async Task<string> CheckForUpdateAsync(bool manual)
+    {
+        try
+        {
+            var release = await UpdateFlow.CheckAsync(CancellationToken.None);
+            if (release == null) return "최신 버전입니다 (또는 확인할 수 없습니다).";
+            _availableUpdate = release;
+            _update.ToolTip = $"새 버전 {release.TagName} 설치 (현재 {UpdateFlow.DisplayVersion})";
+            _update.Visibility = Visibility.Visible;
+            return $"새 버전 {release.TagName} 이 있습니다. 헤더의 ⬆ 버튼으로 설치하세요.";
+        }
+        catch (Exception ex)
+        {
+            return manual ? "확인에 실패했습니다: " + ex.Message : "";
+        }
+    }
+
+    private async Task InstallUpdateAsync()
+    {
+        if (_availableUpdate is not { } release || _updating) return;
+        MessageBoxResult answer;
+        using (_controller.Popups.Scope())
+            answer = MessageBox.Show(this, $"{release.TagName} 로 업데이트하고 다시 시작할까요?\n(현재 {UpdateFlow.DisplayVersion})",
+                "ModuleDock", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (answer != MessageBoxResult.Yes) return;
+
+        _updating = true;
+        var progress = new Progress<double>(p => _update.Content = $"{p:P0}");
+        var outcome = await UpdateFlow.InstallAsync(release, progress, CancellationToken.None);
+        _updating = false;
+        _update.Content = "⬆";
+        if (outcome.AppMustExit)
+        {
+            Application.Current.Shutdown();
+            return;
+        }
+        using (_controller.Popups.Scope())
+            MessageBox.Show(this, outcome.Message, "ModuleDock");
     }
 
     private void ShowAddMenu()

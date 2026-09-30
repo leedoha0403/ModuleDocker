@@ -13,6 +13,25 @@ internal static class Interop
     [DllImport("user32.dll")]
     private static extern bool GetCursorPos(out POINT p);
 
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
+    /// <summary>Makes the system title bar follow the Host theme now and on every later theme change (Windows 10 1809+ / 11).</summary>
+    public static void FollowTheme(Window window)
+    {
+        void Apply()
+        {
+            var hwnd = new System.Windows.Interop.WindowInteropHelper(window).Handle;
+            if (hwnd == IntPtr.Zero) return;
+            var on = HostTheme.IsDark ? 1 : 0;
+            // 20 = DWMWA_USE_IMMERSIVE_DARK_MODE (19 on the earliest builds that support it)
+            if (DwmSetWindowAttribute(hwnd, 20, ref on, sizeof(int)) != 0) DwmSetWindowAttribute(hwnd, 19, ref on, sizeof(int));
+        }
+        Action changed = () => window.Dispatcher.BeginInvoke(Apply);
+        window.SourceInitialized += (_, _) => { Apply(); HostTheme.Changed += changed; };
+        window.Closed += (_, _) => HostTheme.Changed -= changed;
+    }
+
     /// <summary>Cursor position in device pixels.</summary>
     public static Point CursorPixels()
     {
