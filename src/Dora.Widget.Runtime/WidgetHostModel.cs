@@ -10,7 +10,6 @@ public sealed class WidgetHostModel
 {
     private readonly WidgetStateMachine _machine;
     private readonly DockManager _dock;
-    private readonly AdaptiveLayoutManager _layout;
     private readonly Func<string, WidgetManifest> _manifestOf;
 
     public WidgetHostModel(
@@ -23,7 +22,6 @@ public sealed class WidgetHostModel
         _machine = machine;
         _manifestOf = manifestOf;
         _dock = dock ?? new DockManager();
-        _layout = new AdaptiveLayoutManager(Options.ItemSpacing);
     }
 
     public HostOptions Options { get; }
@@ -31,6 +29,16 @@ public sealed class WidgetHostModel
     public DockManager Dock => _dock;
 
     public IReadOnlyList<string> DockedOrder => _dock.Order;
+
+    /// <summary>
+    /// Narrowest usable content width: the largest declared minimum of any docked widget's Collapsed mode.
+    /// A Host narrower than this would force a widget below its declared minimum size.
+    /// </summary>
+    public double RequiredMinWidth => _dock.Order
+        .Where(id => _machine.States.Any(x => x.InstanceId == id))
+        .Select(id => _manifestOf(_machine.Get(id).WidgetId).Layout.MinCollapsedSize.Width)
+        .DefaultIfEmpty(0)
+        .Max();
 
     /// <summary>Last computed layout; null until <see cref="Layout"/> runs.</summary>
     public LayoutResult? LastLayout { get; private set; }
@@ -67,7 +75,8 @@ public sealed class WidgetHostModel
             })
             .ToList();
 
-        var result = _layout.Compute(available, items);
+        // Built per call so a changed ItemSpacing takes effect immediately.
+        var result = new AdaptiveLayoutManager(Options.ItemSpacing).Compute(available, items);
         foreach (var slot in result.Slots)
             _machine.Get(slot.InstanceId).DisplayMode = slot.Mode;
         LastLayout = result;

@@ -1,0 +1,4 @@
+{ "grants": {
+  "dev.leedoha.diskusage.overview": ["FileSystem"],
+  "dev.leedoha.aiusage.summary": ["FileSystem", "Network", "ProcessExecution", "Notifications"]
+} }

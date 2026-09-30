@@ -321,3 +321,60 @@ public class PersistenceTests
         }
     }
 }
+
+public class PermissionGrantTests
+{
+    [Fact]
+    public async Task Prompt_grant_is_reported_so_it_can_be_persisted()
+    {
+        var store = new InMemoryPermissionGrantStore();
+        var p = new WidgetPermissionService(WidgetCapabilities.FileSystem | WidgetCapabilities.Network,
+            store.Get("w"), _ => Task.FromResult(true), g => store.Set("w", store.Get("w") | g));
+        Assert.True(await p.RequestAsync(WidgetCapabilities.FileSystem));
+        Assert.Equal(WidgetCapabilities.FileSystem, store.Get("w"));
+
+        // a fresh service for the next session starts with the stored grant and does not prompt again
+        var prompts = 0;
+        var again = new WidgetPermissionService(WidgetCapabilities.FileSystem | WidgetCapabilities.Network,
+            store.Get("w"), _ => { prompts++; return Task.FromResult(false); });
+        Assert.True(again.IsGranted(WidgetCapabilities.FileSystem));
+        Assert.True(await again.RequestAsync(WidgetCapabilities.FileSystem));
+        Assert.Equal(0, prompts);
+    }
+
+    [Fact]
+    public async Task Denied_prompt_is_not_stored()
+    {
+        var store = new InMemoryPermissionGrantStore();
+        var p = new WidgetPermissionService(WidgetCapabilities.Clipboard, WidgetCapabilities.None,
+            _ => Task.FromResult(false), g => store.Set("w", g));
+        Assert.False(await p.RequestAsync(WidgetCapabilities.Clipboard));
+        Assert.Equal(WidgetCapabilities.None, store.Get("w"));
+    }
+
+    [Fact]
+    public void Json_store_round_trips_ignores_unknown_names_and_survives_corruption()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "md-perm-" + Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(dir, "permissions.json");
+        try
+        {
+            var store = new JsonPermissionGrantStore(path);
+            Assert.Equal(WidgetCapabilities.None, store.Get("a"));
+            store.Set("a", WidgetCapabilities.FileSystem | WidgetCapabilities.Git);
+            store.Set("b", WidgetCapabilities.Network);
+
+            var reloaded = new JsonPermissionGrantStore(path);
+            Assert.Equal(WidgetCapabilities.FileSystem | WidgetCapabilities.Git, reloaded.Get("a"));
+            Assert.Equal(WidgetCapabilities.Network, reloaded.Get("b"));
+            Assert.Contains("\"FileSystem\"", File.ReadAllText(path));
+
+            File.WriteAllText(path, "{\"grants\":{\"a\":[\"FileSystem\",\"Bogus\"]}}");
+            Assert.Equal(WidgetCapabilities.FileSystem, new JsonPermissionGrantStore(path).Get("a"));
+
+            File.WriteAllText(path, "not json");
+            Assert.Equal(WidgetCapabilities.None, new JsonPermissionGrantStore(path).Get("a"));
+        }
+        finally { if (Directory.Exists(dir)) Directory.Delete(dir, true); }
+    }
+}

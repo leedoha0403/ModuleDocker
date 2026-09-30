@@ -16,7 +16,7 @@ public sealed class WidgetChrome : Border
 {
     private readonly Grid _root = new();
     private readonly ContentPresenter _content = new();
-    private readonly ToggleButton _pin;
+    private readonly Button _pin;
     private readonly WidgetInstance _instance;
 
     public WidgetChrome(WidgetInstance instance, object summaryView)
@@ -24,7 +24,7 @@ public sealed class WidgetChrome : Border
         _instance = instance;
         InstanceId = instance.State.InstanceId;
 
-        CornerRadius = new CornerRadius(6);
+        CornerRadius = new CornerRadius(8);
         BorderThickness = new Thickness(1);
         Background = HostBrushes.Surface;
         BorderBrush = HostBrushes.Border;
@@ -34,20 +34,26 @@ public sealed class WidgetChrome : Border
         _content.Content = summaryView;
         _root.Children.Add(_content);
 
-        _pin = new ToggleButton
+        _pin = new Button
         {
             Content = "", // Segoe MDL2 Pin
             FontFamily = new FontFamily("Segoe MDL2 Assets"),
             FontSize = 11,
             Width = 22,
             Height = 22,
+            MinWidth = 22,
+            MinHeight = 22,
             Padding = new Thickness(0),
+            Style = HostStyles.Button,
+            Background = HostBrushes.Background,
+            BorderBrush = HostBrushes.Border,
+            Foreground = HostBrushes.Text,
             HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment = VerticalAlignment.Top,
-            Margin = new Thickness(0, 2, 2, 0),
+            Margin = new Thickness(0, 6, 6, 0),
             Cursor = Cursors.Arrow,
             Visibility = Visibility.Collapsed,
-            ToolTip = "Pin",
+            ToolTip = "고정",
             Focusable = false
         };
         // The pin button must not start a drag or count as a widget click.
@@ -87,9 +93,9 @@ public sealed class WidgetChrome : Border
         var dragging = s.InteractionState == WidgetInteractionState.Dragging;
 
         BorderBrush = pinned ? HostBrushes.Pinned : focused ? HostBrushes.Focus : HostBrushes.Border;
+        _pin.Foreground = pinned ? HostBrushes.Pinned : HostBrushes.Text;
         Opacity = dragging ? 0.85 : 1;
-        _pin.IsChecked = pinned;
-        _pin.ToolTip = pinned ? "Unpin" : "Pin";
+        _pin.ToolTip = pinned ? "고정 해제" : "고정";
         _pin.Visibility = pinned || focused || (s.IsPointerOver && !dragging)
             ? Visibility.Visible
             : Visibility.Collapsed;
@@ -105,18 +111,4 @@ public sealed class WidgetChrome : Border
             case Decorator d: d.Child = null; break;
         }
     }
-}
-
-internal static class HostBrushes
-{
-    public static readonly Brush Surface = Freeze(new SolidColorBrush(Color.FromRgb(0x24, 0x27, 0x2E)));
-    public static readonly Brush Border = Freeze(new SolidColorBrush(Color.FromRgb(0x3A, 0x3F, 0x4A)));
-    public static readonly Brush Focus = Freeze(new SolidColorBrush(Color.FromRgb(0x4C, 0x9A, 0xFF)));
-    public static readonly Brush Pinned = Freeze(new SolidColorBrush(Color.FromRgb(0xF2, 0xA9, 0x3B)));
-    public static readonly Brush Background = Freeze(new SolidColorBrush(Color.FromRgb(0x1B, 0x1D, 0x22)));
-    public static readonly Brush Text = Freeze(new SolidColorBrush(Color.FromRgb(0xE6, 0xE8, 0xEC)));
-    public static readonly Brush Drop = Freeze(new SolidColorBrush(Color.FromRgb(0x4C, 0x9A, 0xFF)));
-    public static readonly Brush Detach = Freeze(new SolidColorBrush(Color.FromRgb(0xE5, 0x5B, 0x5B)));
-
-    private static Brush Freeze(SolidColorBrush b) { b.Freeze(); return b; }
 }

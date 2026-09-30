@@ -3,7 +3,9 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Threading;
 using Dora.Widget.Abstractions;
+using Dora.Widget.Host.HostWindow;
 using Dora.Widget.Runtime;
+using Dora.Widget.Runtime.HostWindow;
 
 namespace Dora.Widget.Host;
 
@@ -22,7 +24,15 @@ public sealed class HostController
     private readonly DispatcherTimer _saveTimer;
     private readonly Dictionary<string, WidgetChrome> _chromes = new();
     private readonly Action<string>? _log;
+    private readonly IPermissionGrantStore _grants;
+    private readonly IMonitorProvider _monitors;
     private readonly List<LayoutEntry> _orphans = new(); // entries of widgets that are not installed right now
+
+    // hand-over to a widget's original application (see IWidgetDetachHandler)
+    private readonly IWidgetStateStore _stateStore;
+    private readonly Dictionary<string, IWidgetDetachHandler> _detachHandlers = new();
+    private readonly HashSet<string> _detaching = new();
+    private readonly Dispatcher _ui = Dispatcher.CurrentDispatcher;
 
     // drag session
     private WidgetChrome? _dragChrome;
@@ -34,13 +44,24 @@ public sealed class HostController
         IWidgetStateStore stateStore,
         ILayoutStore layoutStore,
         HostOptions? options = null,
-        Action<string>? log = null)
+        Action<string>? log = null,
+        IPermissionGrantStore? grants = null,
+        IMonitorProvider? monitors = null,
+        IEnumerable<IWidgetDetachHandler>? detachHandlers = null)
     {
         _log = log;
+        _stateStore = stateStore;
+        _monitors = monitors ?? new SystemMonitorProvider();
         _registry = registry;
         var opts = options ?? new HostOptions();
         _machine = new WidgetStateMachine(new DispatcherTimerScheduler(), opts);
+        _grants = grants ?? new InMemoryPermissionGrantStore();
         _runtime = new WidgetRuntime(registry, _machine, stateStore,
+            permissions: m => new WidgetPermissionService(
+                m.Capabilities,
+                _grants.Get(m.Id),
+                prompt: caps => (PermissionPrompt ?? DefaultPermissionPrompt)(m, caps),
+                onGranted: g => _grants.Set(m.Id, _grants.Get(m.Id) | g)),
             log: (level, msg, ex) => _log?.Invoke($"[{level}] {msg}{(ex is null ? "" : " - " + ex.Message)}"));
         _model = new WidgetHostModel(_machine, id => Manifest(id), opts);
         _layoutStore = new LayoutManager(layoutStore);
@@ -51,6 +72,7 @@ public sealed class HostController
         Details = new DetailWindowManager(_runtime, _machine);
 
         _machine.StateChanged += OnStateChanged;
+        RegisterDetachHandlers(detachHandlers);
 
         _saveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
         _saveTimer.Tick += (_, _) =>
@@ -61,6 +83,12 @@ public sealed class HostController
     }
 
     public WidgetHostPanel Panel { get; }
+
+    /// <summary>Open Host-owned popups; the Host window keeps itself visible while any is open.</summary>
+    public HostPopupTracker Popups { get; } = new();
+
+    /// <summary>Raised when a widget drag starts/ends and whether a drop preview (gap) is showing.</summary>
+    public event Action<bool, bool>? DragActivityChanged;
     public FloatingWindowManager Floating { get; }
     public DetailWindowManager Details { get; }
     public WidgetRegistry Registry => _registry;
@@ -69,6 +97,26 @@ public sealed class HostController
 
     /// <summary>Supplies Host window bounds for persistence.</summary>
     public Func<WidgetRect?>? HostBoundsProvider { get; set; }
+
+    /// <summary>Asks the user whether a widget may use a declared capability; replaced in tests.</summary>
+    public Func<WidgetManifest, WidgetCapabilities, Task<bool>>? PermissionPrompt { get; set; }
+
+    private Task<bool> DefaultPermissionPrompt(WidgetManifest manifest, WidgetCapabilities caps)
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null) return Task.FromResult(false);
+        return dispatcher.InvokeAsync(() =>
+        {
+            using (Popups.Scope())
+            {
+                var answer = MessageBox.Show(
+                    Application.Current!.MainWindow,
+                    $"\"{manifest.Name}\" 위젯이 다음 기능을 사용하려고 합니다: {caps}{Environment.NewLine}{Environment.NewLine}허용할까요?",
+                    "ModuleDock 권한 요청", MessageBoxButton.YesNo, MessageBoxImage.Question);
+                return answer == MessageBoxResult.Yes;
+            }
+        }).Task;
+    }
 
     /// <summary>Tests drive gestures with synthetic cursor positions, where real mouse capture cannot be held.</summary>
     internal bool UseMouseCapture { get; set; } = true;
@@ -108,7 +156,7 @@ public sealed class HostController
         {
             var s = _machine.Get(id);
             if (s.DockState == DockState.Floating)
-                ShowFloating(chrome, s.FloatingBounds ?? DefaultFloatingBounds(chrome));
+                ShowFloating(chrome, s.FloatingBounds is { } fb ? NormalizeFloating(chrome, fb) : DefaultFloatingBounds(chrome));
             else
                 Panel.Add(chrome);
         }
@@ -133,7 +181,7 @@ public sealed class HostController
             _log?.Invoke($"[Error] {widgetId}: CreateSummaryView failed: {ex.Message}");
             view = new TextBlock
             {
-                Text = instance.Manifest.Name + ": failed to load",
+                Text = instance.Manifest.Name + ": 불러오지 못했습니다",
                 Foreground = HostBrushes.Detach,
                 Margin = new Thickness(8),
                 TextTrimming = TextTrimming.CharacterEllipsis
@@ -165,6 +213,11 @@ public sealed class HostController
         Details.CloseAll();
         Floating.CloseAll();
         await _runtime.ShutdownAsync();
+        foreach (var handler in _detachHandlers.Values)
+        {
+            try { await handler.ShutdownAsync(); }
+            catch (Exception ex) { _log?.Invoke($"[Error] detach handler {handler.WidgetId} shutdown: {ex.Message}"); }
+        }
 
         // Nothing may lay out or reference instances that no longer exist.
         foreach (var (id, chrome) in _chromes.ToList())
@@ -173,6 +226,135 @@ public sealed class HostController
             _model.Remove(id);
         }
         _chromes.Clear();
+    }
+
+    // ---- hand-over to the widget's original application ------------------------
+    //
+    // A widget may also exist as a separate program. Dragging it out of the Host then hands ownership to that
+    // program (it gets the widget's state and the drop position) and the Host drops its own instance; dropping
+    // the program's window onto the Host hands it back. One owner at a time; the side that acknowledges the
+    // state owns the widget. Anything that goes wrong leaves the Host as the owner (floating is the fallback).
+
+    private void RegisterDetachHandlers(IEnumerable<IWidgetDetachHandler>? handlers)
+    {
+        if (handlers is null) return;
+        foreach (var handler in handlers)
+        {
+            if (!_detachHandlers.TryAdd(handler.WidgetId, handler))
+            {
+                _log?.Invoke($"[Warn] more than one hand-over handler for {handler.WidgetId}; ignoring {handler.GetType().Name}");
+                continue;
+            }
+            var widgetId = handler.WidgetId;
+            handler.DockRequested += request => _ui.InvokeAsync(() => DockFromExternalAsync(widgetId, request)).Task.Unwrap();
+            handler.DockHover += point => _ui.BeginInvoke(new Action(() => ShowExternalDockHint(widgetId, point)));
+            handler.DetachEnded += () => _log?.Invoke($"[Info] {widgetId}: the external application ended without docking");
+        }
+    }
+
+    // Only widgets that declared ProcessExecution (the hand-over starts another program) and have a handler.
+    private bool CanDetachExternally(WidgetChrome chrome) =>
+        _detachHandlers.TryGetValue(chrome.Instance.Manifest.Id, out var handler) &&
+        !handler.IsDetached &&
+        (chrome.Instance.Manifest.Capabilities & WidgetCapabilities.ProcessExecution) != 0 &&
+        !_detaching.Contains(chrome.InstanceId);
+
+    private async Task DetachToExternalAsync(WidgetChrome chrome, WidgetRect bounds)
+    {
+        var id = chrome.InstanceId;
+        if (!_detaching.Add(id)) return;
+        var handedOver = false;
+        try
+        {
+            var handler = _detachHandlers[chrome.Instance.Manifest.Id];
+            // The hand-over starts another program on the user's behalf, so the widget needs the user's OK first.
+            if (await chrome.Instance.Context.Permissions.RequestAsync(WidgetCapabilities.ProcessExecution))
+            {
+                await _runtime.SaveStateAsync(chrome.Instance);
+                var stored = _stateStore.Load(id);
+                if (stored is not null)
+                {
+                    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                    var dpi = DpiAt(new Point(bounds.X, bounds.Y)) * 96;
+                    handedOver = await handler.DetachAsync(
+                        new DetachRequest(id, stored.StateVersion, stored.Json, bounds, dpi), timeout.Token);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _log?.Invoke($"[Error] hand-over of {chrome.Instance.Manifest.Id} failed: {ex.Message}");
+        }
+        finally
+        {
+            _detaching.Remove(id);
+        }
+
+        if (handedOver)
+        {
+            _log?.Invoke($"[Info] {chrome.Instance.Manifest.Id} handed over to its application");
+            await RemoveWidgetAsync(id);
+            return;
+        }
+
+        // Not taken over: keep the widget, as a Host floating window like any other widget.
+        if (_chromes.ContainsKey(id) && _machine.Get(id).DockState == DockState.Docked && _model.Float(id, bounds))
+        {
+            Panel.Release(chrome);
+            ShowFloating(chrome, bounds);
+            ScheduleSave();
+        }
+    }
+
+    // The application's window was dropped on the Host: recreate the widget from its state, at the drop position.
+    private async Task<bool> DockFromExternalAsync(string widgetId, DockRequest request)
+    {
+        if (!_registry.TryGetManifest(widgetId, out var manifest)) return false;
+        if (!manifest.AllowMultipleInstances && _runtime.Instances.Any(i => i.State.WidgetId == widgetId))
+        {
+            _log?.Invoke($"[Warn] {widgetId}: not docking, the Host already has an instance");
+            return false;
+        }
+
+        var instanceId = Guid.NewGuid().ToString("D");
+        try
+        {
+            _stateStore.Save(instanceId, new StoredWidgetState(request.StateVersion, request.StateJson));
+            var chrome = await CreateAsync(widgetId, instanceId);
+            var index = _model.InsertionIndexAt(Panel.ScreenYToCanvas(request.ScreenCursor.Y));
+            _model.AttachDocked(instanceId, index);
+            Panel.Add(chrome);
+            Panel.HideIndicator();
+            Panel.SetDockHint(false);
+            Panel.RequestRelayout();
+            DragActivityChanged?.Invoke(false, false);
+            ScheduleSave();
+            _log?.Invoke($"[Info] {widgetId} docked from its application");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _log?.Invoke($"[Error] docking {widgetId} from its application failed: {ex.Message}");
+            try { _stateStore.Delete(instanceId); } catch { /* best effort */ }
+            return false;
+        }
+    }
+
+    // The application's window is being dragged over the Host (or left it): show where it would land.
+    private void ShowExternalDockHint(string widgetId, WidgetPoint? point)
+    {
+        if (point is null)
+        {
+            Panel.HideIndicator();
+            Panel.SetDockHint(false);
+            DragActivityChanged?.Invoke(false, false);
+            return;
+        }
+        if (!_registry.TryGetManifest(widgetId, out var manifest)) return;
+        var index = _model.InsertionIndexAt(Panel.ScreenYToCanvas(point.Value.Y));
+        Panel.ShowGap(index, manifest.Layout.CompactSize.Height);
+        Panel.SetDockHint(true);
+        DragActivityChanged?.Invoke(true, true);
     }
 
     // ---- persistence ----------------------------------------------------------
@@ -241,6 +423,11 @@ public sealed class HostController
         if (s.DockState == DockState.Docked)
         {
             var bounds = DefaultFloatingBounds(chrome);
+            if (CanDetachExternally(chrome))
+            {
+                _ = DetachToExternalAsync(chrome, bounds);
+                return;
+            }
             if (_model.Float(instanceId, bounds))
             {
                 Panel.Release(chrome);
@@ -255,12 +442,32 @@ public sealed class HostController
         }
     }
 
+    /// <summary>DPI scale of the monitor under a physical-pixel point.</summary>
+    private double DpiAt(Point px) =>
+        MonitorMath.Pick(_monitors.GetMonitors(), new WidgetRect(px.X, px.Y, 1, 1)).DpiScale;
+
+    /// <summary>Just right of the Host window (physical pixels), staggered per floating widget.</summary>
     private WidgetRect DefaultFloatingBounds(WidgetChrome chrome)
     {
         var natural = chrome.Instance.Manifest.Layout.NaturalSize;
-        var host = Panel.IsLoaded ? Interop.ScreenBounds(Panel) : new Rect(100, 100, 0, 0);
-        return new WidgetRect(host.Right + 12, host.Top + 12 + _chromes.Count(c => Floating.Contains(c.Key)) * 24,
-            natural.Width, natural.Height);
+        var host = Panel.IsLoaded ? Interop.ScreenBoundsPx(Panel) : new Rect(100, 100, 0, 0);
+        var dpi = Panel.IsLoaded ? Interop.Dpi(Panel) : 1.0;
+        return NormalizeFloating(chrome, new WidgetRect(
+            host.Right + 12 * dpi, host.Top + (12 + _chromes.Count(c => Floating.Contains(c.Key)) * 24) * dpi,
+            natural.Width * dpi, natural.Height * dpi));
+    }
+
+    /// <summary>
+    /// Fits saved floating bounds to the current monitors: natural size at that monitor's DPI, fully
+    /// inside its work area (a saved position may belong to a monitor that is no longer there).
+    /// </summary>
+    private WidgetRect NormalizeFloating(WidgetChrome chrome, WidgetRect saved)
+    {
+        var natural = chrome.Instance.Manifest.Layout.NaturalSize;
+        var monitor = MonitorMath.Pick(_monitors.GetMonitors(), saved);
+        return SnapMath.ClampInside(
+            new WidgetRect(saved.X, saved.Y, natural.Width * monitor.DpiScale, natural.Height * monitor.DpiScale),
+            monitor.WorkArea);
     }
 
     private void ShowFloating(WidgetChrome chrome, WidgetRect bounds)
@@ -279,7 +486,7 @@ public sealed class HostController
         chrome.PreviewMouseLeftButtonDown += OnChromeDown;
         chrome.PreviewMouseMove += OnChromeMove;
         chrome.PreviewMouseLeftButtonUp += OnChromeUp;
-        chrome.LostMouseCapture += (_, _) => { if (_dragChrome == chrome) FinishDrag(chrome, Interop.CursorDips(chrome), commit: false); };
+        chrome.LostMouseCapture += (_, _) => { if (_dragChrome == chrome) FinishDrag(chrome, Interop.CursorPixels(), commit: false); };
         chrome.PinToggled += c => TogglePin(c.InstanceId);
         chrome.ContextMenuOpening += (_, e) =>
         {
@@ -295,13 +502,14 @@ public sealed class HostController
         var s = _machine.Get(id);
         var m = chrome.Instance.Manifest;
         var menu = new ContextMenu();
+        Popups.Track(menu);
 
-        menu.Items.Add(Item(s.InteractionState == WidgetInteractionState.Pinned ? "Unpin" : "Pin", true, () => TogglePin(id)));
-        menu.Items.Add(Item("Open details", m.SupportsDetailView, () => OpenDetail(id)));
-        menu.Items.Add(Item(s.DockState == DockState.Docked ? "Detach (float)" : "Dock", m.SupportsFloating || s.DockState == DockState.Floating,
+        menu.Items.Add(Item(s.InteractionState == WidgetInteractionState.Pinned ? "고정 해제" : "고정", true, () => TogglePin(id)));
+        menu.Items.Add(Item("상세 보기", m.SupportsDetailView, () => OpenDetail(id)));
+        menu.Items.Add(Item(s.DockState == DockState.Docked ? "분리 (플로팅)" : "도킹", m.SupportsFloating || s.DockState == DockState.Floating,
             () => ToggleFloat(id)));
         menu.Items.Add(new Separator());
-        menu.Items.Add(Item("Remove", true, () => _ = RemoveWidgetAsync(id)));
+        menu.Items.Add(Item("삭제", true, () => _ = RemoveWidgetAsync(id)));
         return menu;
 
         static MenuItem Item(string header, bool enabled, Action click)
@@ -315,22 +523,23 @@ public sealed class HostController
     private void OnChromeDown(object sender, MouseButtonEventArgs e)
     {
         var chrome = (WidgetChrome)sender;
-        PressDown(chrome, Interop.CursorDips(chrome), e.ClickCount);
+        PressDown(chrome, Interop.CursorPixels(), e.ClickCount);
     }
 
     private void OnChromeMove(object sender, MouseEventArgs e)
     {
         var chrome = (WidgetChrome)sender;
-        PressMove(chrome, Interop.CursorDips(chrome), e.LeftButton == MouseButtonState.Pressed);
+        PressMove(chrome, Interop.CursorPixels(), e.LeftButton == MouseButtonState.Pressed);
     }
 
     private void OnChromeUp(object sender, MouseButtonEventArgs e)
     {
         var chrome = (WidgetChrome)sender;
-        PressUp(chrome, Interop.CursorDips(chrome));
+        PressUp(chrome, Interop.CursorPixels());
     }
 
-    // The Press* methods hold the gesture logic; cursor positions are screen DIPs (see Interop.CursorDips).
+    // The Press* methods hold the gesture logic; cursor positions are physical screen pixels, so widgets on
+    // monitors with different DPI compare correctly.
     // They are internal so tests can drive complete gestures without a real mouse.
 
     internal void PressDown(WidgetChrome chrome, Point cursor, int clickCount)
@@ -362,7 +571,7 @@ public sealed class HostController
 
         if (_drag.Phase == DragPhase.Pending)
         {
-            if (_drag.PointerMove(cursor.X, cursor.Y)) StartDrag(chrome, cursor);
+            if (_drag.PointerMove(cursor.X, cursor.Y, Interop.Dpi(chrome))) StartDrag(chrome, cursor);
         }
         else if (_drag.Phase == DragPhase.Dragging && _dragChrome == chrome)
         {
@@ -380,13 +589,14 @@ public sealed class HostController
     {
         var id = chrome.InstanceId;
         _dragChrome = chrome;
-        var topLeft = Interop.ScreenBounds(chrome).TopLeft;
+        var topLeft = Interop.ScreenBoundsPx(chrome).TopLeft;
         _grab = cursor - topLeft;
 
         _machine.DragStart(id);
         if (_machine.Get(id).DockState == DockState.Docked) Panel.BeginDrag(id);
         // Apply any pending focus/pin size change now so the drag gap matches what the user sees.
         if (_machine.Get(id).DockState == DockState.Docked) Panel.Relayout();
+        DragActivityChanged?.Invoke(true, false);
         if (UseMouseCapture) chrome.CaptureMouse();
     }
 
@@ -394,19 +604,21 @@ public sealed class HostController
     {
         var id = chrome.InstanceId;
         var s = _machine.Get(id);
-        var hostRect = Interop.ScreenBounds(Panel);
+        var hostRect = Interop.ScreenBoundsPx(Panel);
+        var panelDpi = Interop.Dpi(Panel);
         var docked = s.DockState == DockState.Docked;
-        var margin = docked ? _model.Options.DetachMargin : 0;
+        var margin = docked ? _model.Options.DetachMargin * panelDpi : 0;
         var inside = DockManager.IsInsideHostZone(
             new WidgetRect(hostRect.X, hostRect.Y, hostRect.Width, hostRect.Height), cursor.X, cursor.Y, margin);
 
         var pointerCanvasY = Panel.ScreenYToCanvas(cursor.Y);
         var index = _model.InsertionIndexAt(pointerCanvasY);
         _drag.Evaluate(inside, index);
+        DragActivityChanged?.Invoke(true, _drag.Target is DragTarget.Reorder or DragTarget.Dock);
 
         if (docked)
         {
-            Panel.MoveDragged(id, pointerCanvasY - _grab.Y);
+            Panel.MoveDragged(id, pointerCanvasY - _grab.Y / panelDpi);
             if (_drag.Target == DragTarget.Reorder)
             {
                 HideGhost();
@@ -426,12 +638,7 @@ public sealed class HostController
         }
         else
         {
-            var window = Floating.Get(id);
-            if (window != null)
-            {
-                window.Left = cursor.X - _grab.X;
-                window.Top = cursor.Y - _grab.Y;
-            }
+            Floating.MoveTo(id, cursor.X - _grab.X, cursor.Y - _grab.Y);
             if (_drag.Target == DragTarget.Dock)
             {
                 Panel.ShowGap(index, chrome.Instance.Manifest.Layout.CompactSize.Height);
@@ -449,7 +656,8 @@ public sealed class HostController
     {
         var natural = chrome.Instance.Manifest.Layout.NaturalSize;
         _ghost ??= new DetachGhostWindow(chrome.Instance.Manifest.Name, natural);
-        _ghost.MoveTo(cursor.X - _grab.X, cursor.Y - _grab.Y);
+        var dpi = DpiAt(cursor);
+        _ghost.MoveToPx(new WidgetRect(cursor.X - _grab.X, cursor.Y - _grab.Y, natural.Width * dpi, natural.Height * dpi));
     }
 
     private void HideGhost()
@@ -468,6 +676,7 @@ public sealed class HostController
         _dragChrome = null;
         HideGhost();
         Mouse.OverrideCursor = null;
+        DragActivityChanged?.Invoke(false, false);
         if (chrome.IsMouseCaptured) chrome.ReleaseMouseCapture();
 
         if (!wasDrag || _machine.Get(id).InteractionState != WidgetInteractionState.Dragging)
@@ -489,8 +698,15 @@ public sealed class HostController
             else
             {
                 var natural = chrome.Instance.Manifest.Layout.NaturalSize;
-                var bounds = new WidgetRect(cursor.X - grab.X, cursor.Y - grab.Y, natural.Width, natural.Height);
-                if (_model.DropDetach(id, bounds))
+                var dpi = DpiAt(cursor);
+                var bounds = new WidgetRect(cursor.X - grab.X, cursor.Y - grab.Y, natural.Width * dpi, natural.Height * dpi);
+                if (CanDetachExternally(chrome))
+                {
+                    // Stays docked until the widget's own application has taken over; floating is the fallback.
+                    _machine.DragEnd(id, DragEndKind.Restore);
+                    _ = DetachToExternalAsync(chrome, bounds);
+                }
+                else if (_model.DropDetach(id, bounds))
                 {
                     Panel.Release(chrome);
                     ShowFloating(chrome, bounds);

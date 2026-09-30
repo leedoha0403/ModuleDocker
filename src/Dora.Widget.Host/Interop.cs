@@ -20,21 +20,18 @@ internal static class Interop
         return new Point(p.X, p.Y);
     }
 
-    /// <summary>Cursor position in DIPs of the visual's own monitor scale.</summary>
-    public static Point CursorDips(Visual visual)
-    {
-        var px = CursorPixels();
-        var dpi = VisualTreeHelper.GetDpi(visual);
-        return new Point(px.X / dpi.DpiScaleX, px.Y / dpi.DpiScaleY);
-    }
+    /// <summary>DPI scale (1.0 = 96 dpi) of the monitor the visual is currently on.</summary>
+    public static double Dpi(Visual visual) => VisualTreeHelper.GetDpi(visual).DpiScaleX;
 
-    /// <summary>Screen bounds (DIP, same space as <see cref="CursorDips"/>) of an element.</summary>
-    public static Rect ScreenBounds(FrameworkElement element)
+    /// <summary>
+    /// Screen bounds of an element in physical pixels. All drag geometry uses pixels so that widgets on
+    /// monitors with different DPI (docked Host, floating windows) can be compared directly.
+    /// </summary>
+    public static Rect ScreenBoundsPx(FrameworkElement element)
     {
         var dpi = VisualTreeHelper.GetDpi(element);
         var topLeft = element.PointToScreen(new Point(0, 0));
-        return new Rect(topLeft.X / dpi.DpiScaleX, topLeft.Y / dpi.DpiScaleY,
-            element.ActualWidth, element.ActualHeight);
+        return new Rect(topLeft.X, topLeft.Y, element.ActualWidth * dpi.DpiScaleX, element.ActualHeight * dpi.DpiScaleY);
     }
 }
 

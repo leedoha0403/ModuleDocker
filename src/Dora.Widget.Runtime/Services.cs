@@ -90,16 +90,19 @@ public sealed class WidgetPermissionService : IWidgetPermissionService
     private readonly WidgetCapabilities _declared;
     private WidgetCapabilities _granted;
     private readonly Func<WidgetCapabilities, Task<bool>>? _prompt;
+    private readonly Action<WidgetCapabilities>? _onGranted;
 
     /// <param name="declared">Capabilities the manifest declared; undeclared ones are never granted.</param>
     /// <param name="granted">Capabilities already granted by the Host/user.</param>
     /// <param name="prompt">Optional user prompt used by <see cref="RequestAsync"/>.</param>
+    /// <param name="onGranted">Called after a prompt grants a capability (used to persist the decision).</param>
     public WidgetPermissionService(WidgetCapabilities declared, WidgetCapabilities granted,
-        Func<WidgetCapabilities, Task<bool>>? prompt = null)
+        Func<WidgetCapabilities, Task<bool>>? prompt = null, Action<WidgetCapabilities>? onGranted = null)
     {
         _declared = declared;
         _granted = granted & declared;
         _prompt = prompt;
+        _onGranted = onGranted;
     }
 
     public bool IsGranted(WidgetCapabilities capability) =>
@@ -113,6 +116,7 @@ public sealed class WidgetPermissionService : IWidgetPermissionService
         if (_prompt is null) return false;
         if (!await _prompt(capability)) return false;
         _granted |= capability;
+        _onGranted?.Invoke(capability);
         return true;
     }
 }

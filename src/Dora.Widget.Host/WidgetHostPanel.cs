@@ -82,7 +82,7 @@ public sealed class WidgetHostPanel : Grid
             IsHitTestVisible = false,
             Child = new TextBlock
             {
-                Text = "This widget can’t be detached",
+                Text = "이 위젯은 분리할 수 없습니다",
                 Foreground = Brushes.Black,
                 FontSize = 11
             }
@@ -104,6 +104,12 @@ public sealed class WidgetHostPanel : Grid
 
     /// <summary>Smooth slide when widgets change position. Tests turn it off to read final positions.</summary>
     internal bool AnimationsEnabled { get; set; } = true;
+
+    /// <summary>Raised at the end of every layout pass.</summary>
+    public event Action? Relaid;
+
+    /// <summary>Width the panel reserves besides the widgets themselves (scrollbar space + chrome border).</summary>
+    public const double WidthOverhead = ScrollBarReserve + 2;
 
     public ScrollViewer Scroll => _scroll;
 
@@ -172,6 +178,7 @@ public sealed class WidgetHostPanel : Grid
         _canvas.Width = width;
         _canvas.Height = Math.Max(result.TotalHeight + (_gapIndex >= 0 ? _gapHeight + _model.Options.ItemSpacing : 0), 0);
         PositionPlaceholder(result, tops);
+        Relaid?.Invoke();
     }
 
     /// <summary>
@@ -305,9 +312,9 @@ public sealed class WidgetHostPanel : Grid
         RequestRelayout();
     }
 
-    /// <summary>Converts a screen-space Y (same space as <see cref="Interop.CursorDips"/>) to canvas Y.</summary>
-    public double ScreenYToCanvas(double screenY) =>
-        screenY - Interop.ScreenBounds(this).Top + _scroll.VerticalOffset;
+    /// <summary>Converts a screen Y in physical pixels to canvas Y (DIPs of this panel's monitor).</summary>
+    public double ScreenYToCanvas(double screenYPx) =>
+        (screenYPx - Interop.ScreenBoundsPx(this).Top) / Interop.Dpi(this) + _scroll.VerticalOffset;
 
     /// <summary>Shown while a widget that cannot float is dragged outside the Host.</summary>
     public void SetBlockedHint(bool on)

@@ -90,6 +90,9 @@ public sealed class WidgetRuntime
         _log = log;
     }
 
+    /// <summary>Shared event bus; the Host listens on it for Host-level topics such as <c>host.attention</c>.</summary>
+    public IWidgetEventBus Events => _events;
+
     public IReadOnlyCollection<WidgetInstance> Instances => _instances.Values;
 
     public WidgetInstance? Find(string instanceId) => _instances.GetValueOrDefault(instanceId);

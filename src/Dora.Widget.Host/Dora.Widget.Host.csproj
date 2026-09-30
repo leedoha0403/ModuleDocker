@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 
   <ItemGroup>
@@ -22,15 +23,30 @@
   <ItemGroup Condition="'$(BundleSamples)' != 'false'">
     <ProjectReference Include="..\..\samples\Clock\Clock.Widget\Clock.Widget.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\..\samples\Counter\Counter.Widget\Counter.Widget.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\samples\DiskUsage\DiskUsage.Widget\DiskUsage.Widget.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <Target Name="CopySampleWidgets" AfterTargets="Build" Condition="'$(BundleSamples)' != 'false'">
     <ItemGroup>
       <ClockFiles Include="..\..\samples\Clock\Clock.Widget\bin\$(Configuration)\net8.0-windows\*.dll" Exclude="..\..\samples\Clock\Clock.Widget\bin\$(Configuration)\net8.0-windows\Dora.*.dll" />
+      <DiskFiles Include="..\..\samples\DiskUsage\DiskUsage.Widget\bin\$(Configuration)\net8.0-windows\*.dll" Exclude="..\..\samples\DiskUsage\DiskUsage.Widget\bin\$(Configuration)\net8.0-windows\Dora.*.dll" />
       <CounterFiles Include="..\..\samples\Counter\Counter.Widget\bin\$(Configuration)\net8.0-windows\*.dll" Exclude="..\..\samples\Counter\Counter.Widget\bin\$(Configuration)\net8.0-windows\Dora.*.dll" />
     </ItemGroup>
     <Copy SourceFiles="@(ClockFiles)" DestinationFolder="$(OutDir)widgets\Clock" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(DiskFiles)" DestinationFolder="$(OutDir)widgets\DiskUsage" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(CounterFiles)" DestinationFolder="$(OutDir)widgets\Counter" SkipUnchangedFiles="true" />
+  </Target>
+
+  <!-- dotnet publish: the bundled widgets belong in the published folder too. -->
+  <Target Name="CopySampleWidgetsToPublish" AfterTargets="Publish" Condition="'$(BundleSamples)' != 'false'">
+    <ItemGroup>
+      <PubClock Include="..\..\samples\Clock\Clock.Widget\bin\$(Configuration)\net8.0-windows\*.dll" Exclude="..\..\samples\Clock\Clock.Widget\bin\$(Configuration)\net8.0-windows\Dora.*.dll" />
+      <PubDisk Include="..\..\samples\DiskUsage\DiskUsage.Widget\bin\$(Configuration)\net8.0-windows\*.dll" Exclude="..\..\samples\DiskUsage\DiskUsage.Widget\bin\$(Configuration)\net8.0-windows\Dora.*.dll" />
+      <PubCounter Include="..\..\samples\Counter\Counter.Widget\bin\$(Configuration)\net8.0-windows\*.dll" Exclude="..\..\samples\Counter\Counter.Widget\bin\$(Configuration)\net8.0-windows\Dora.*.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(PubClock)" DestinationFolder="$(PublishDir)widgets\Clock" />
+    <Copy SourceFiles="@(PubDisk)" DestinationFolder="$(PublishDir)widgets\DiskUsage" />
+    <Copy SourceFiles="@(PubCounter)" DestinationFolder="$(PublishDir)widgets\Counter" />
   </Target>
 
 </Project>

@@ -34,13 +34,16 @@ public sealed class DragManager
         Phase = DragPhase.Pending;
     }
 
-    /// <summary>Returns true exactly once, when the threshold is crossed.</summary>
-    public bool PointerMove(double x, double y)
+    /// <summary>
+    /// Returns true exactly once, when the threshold is crossed. Positions and the threshold are in the
+    /// same unit; pass <paramref name="thresholdScale"/> (e.g. the DPI scale) when positions are physical pixels.
+    /// </summary>
+    public bool PointerMove(double x, double y, double thresholdScale = 1)
     {
         if (Phase != DragPhase.Pending) return false;
         var dx = x - _startX;
         var dy = y - _startY;
-        if (Math.Sqrt(dx * dx + dy * dy) < _options.DragThreshold) return false;
+        if (Math.Sqrt(dx * dx + dy * dy) < _options.DragThreshold * thresholdScale) return false;
         Phase = DragPhase.Dragging;
         return true;
     }

@@ -3,13 +3,18 @@ using System.Windows.Controls;
 using System.Windows.Threading;
 using Dora.Widget.Abstractions;
 using Dora.Widget.Host;
+using Dora.Widget.Host.HostWindow;
+using Dora.Widget.Runtime.HostWindow;
 using Dora.Widget.Runtime;
 
 namespace Dora.Widget.Host.Tests;
 
 internal sealed class TestWidget : IComposableWidget, IDisplayModeAware
 {
-    public TestWidget(string id, bool multi, bool detail, bool floating)
+    public IWidgetContext? Context;
+
+    public TestWidget(string id, bool multi, bool detail, bool floating, WidgetCapabilities caps = WidgetCapabilities.None,
+        double minCollapsedWidth = 40)
     {
         Manifest = new WidgetManifest
         {
@@ -19,14 +24,14 @@ internal sealed class TestWidget : IComposableWidget, IDisplayModeAware
             ContractVersion = ContractInfo.Current,
             Layout = new WidgetLayoutProfile
             {
-                NaturalSize = new(200, 100),
-                CompactSize = new(200, 40),
-                CollapsedSize = new(200, 20),
+                NaturalSize = new(Math.Max(200, minCollapsedWidth), 100),
+                CompactSize = new(Math.Max(200, minCollapsedWidth), 40),
+                CollapsedSize = new(Math.Max(200, minCollapsedWidth), 20),
                 MinNaturalSize = new(100, 100),
                 MinCompactSize = new(80, 40),
-                MinCollapsedSize = new(40, 20)
+                MinCollapsedSize = new(minCollapsedWidth, 20)
             },
-            Capabilities = WidgetCapabilities.None,
+            Capabilities = caps,
             AllowMultipleInstances = multi,
             SupportsDetailView = detail,
             SupportsFloating = floating
@@ -37,7 +42,7 @@ internal sealed class TestWidget : IComposableWidget, IDisplayModeAware
     public WidgetDisplayMode Mode = WidgetDisplayMode.Compact;
     public int Counter;
 
-    public Task InitializeAsync(IWidgetContext context, CancellationToken ct) => Task.CompletedTask;
+    public Task InitializeAsync(IWidgetContext context, CancellationToken ct) { Context = context; return Task.CompletedTask; }
     public object CreateSummaryView(IWidgetContext context) => new ModeView(this);
     public object? CreateDetailView(IWidgetContext context) => Manifest.SupportsDetailView ? new TextBlock { Text = "detail" } : null;
     public Task SaveStateAsync(IWidgetStateWriter writer) { writer.Write(1, Counter.ToString()); return Task.CompletedTask; }
@@ -60,8 +65,18 @@ internal sealed class ModeView : TextBlock, IDisplayModeAware
 /// <summary>Runs a test body on an STA thread with a WPF dispatcher.</summary>
 internal static class Sta
 {
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool SetCursorPos(int x, int y);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern int GetSystemMetrics(int index);
+
+    /// <summary>
+    /// Real mouse events reach test windows that happen to sit under the physical cursor (hover, handle reveal, ...)
+    /// and change results. No test window is ever placed in the bottom-left corner, so park the cursor there.
+    /// </summary>
+    private static void ParkCursor() => SetCursorPos(0, Math.Max(0, GetSystemMetrics(1) - 1));
+
     public static void Run(Action body)
     {
+        ParkCursor();
         Exception? error = null;
         var thread = new Thread(() =>
         {
@@ -73,6 +88,16 @@ internal static class Sta
         thread.Start();
         thread.Join();
         if (error != null) throw new Exception("STA test failed: " + error, error);
+    }
+
+    /// <summary>Lets real-time work (animations) run for the given time.</summary>
+    public static void PumpFor(int ms)
+    {
+        var frame = new DispatcherFrame();
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(ms) };
+        timer.Tick += (_, _) => { timer.Stop(); frame.Continue = false; };
+        timer.Start();
+        Dispatcher.PushFrame(frame);
     }
 
     public static void Pump()
@@ -122,7 +147,7 @@ internal sealed class Rig : IDisposable
 
     public System.Windows.Point ScreenPointOn(WidgetChrome c, double dx = 10, double dy = 10)
     {
-        var b = Interop.ScreenBounds(c);
+        var b = Interop.ScreenBoundsPx(c);
         return new System.Windows.Point(b.Left + dx, b.Top + dy);
     }
 
@@ -136,6 +161,78 @@ internal sealed class Rig : IDisposable
 
 public class HostUiTests
 {
+    [Fact]
+    public void Permission_prompt_grants_once_and_is_remembered_across_restarts()
+    {
+        Sta.Run(() =>
+        {
+            var grants = new InMemoryPermissionGrantStore();
+            var prompts = new List<string>();
+            HostController Make()
+            {
+                var reg = new WidgetRegistry();
+                reg.Register(() => new TestWidget("dev.test.fs", false, false, true, WidgetCapabilities.FileSystem));
+                return new HostController(reg, new InMemoryWidgetStateStore(), new InMemoryLayoutStore(), grants: grants)
+                {
+                    PermissionPrompt = (m, caps) => { prompts.Add(m.Id + ":" + caps); return Task.FromResult(true); }
+                };
+            }
+
+            var first = Make();
+            first.AddWidgetAsync("dev.test.fs").GetAwaiter().GetResult();
+            var ctx = ((TestWidget)first.Runtime.Instances.Single().Widget).Context!;
+            Assert.False(ctx.Permissions.IsGranted(WidgetCapabilities.FileSystem));
+            Assert.True(ctx.Permissions.RequestAsync(WidgetCapabilities.FileSystem).GetAwaiter().GetResult());
+            Assert.Single(prompts);
+            Assert.Equal(WidgetCapabilities.FileSystem, grants.Get("dev.test.fs"));
+            // undeclared capabilities are refused without ever asking the user
+            Assert.False(ctx.Permissions.RequestAsync(WidgetCapabilities.Network).GetAwaiter().GetResult());
+            Assert.Single(prompts);
+
+            var second = Make();
+            second.AddWidgetAsync("dev.test.fs").GetAwaiter().GetResult();
+            var ctx2 = ((TestWidget)second.Runtime.Instances.Single().Widget).Context!;
+            Assert.True(ctx2.Permissions.IsGranted(WidgetCapabilities.FileSystem));
+            Assert.True(ctx2.Permissions.RequestAsync(WidgetCapabilities.FileSystem).GetAwaiter().GetResult());
+            Assert.Single(prompts);
+        });
+    }
+
+    [Fact]
+    public void Host_window_cannot_become_narrower_than_a_widgets_declared_minimum()
+    {
+        Sta.Run(() =>
+        {
+            var reg = new WidgetRegistry();
+            reg.Register(() => new TestWidget("dev.test.wide", false, false, true, minCollapsedWidth: 260));
+            reg.Register(() => new TestWidget("dev.test.multi", true, true, true));
+            var hc = new HostController(reg, new InMemoryWidgetStateStore(), new InMemoryLayoutStore()) { UseMouseCapture = false };
+            var win = new MainWindow(hc) { Width = 400, Height = 400, ShowActivated = false };
+            win.Show();
+            try
+            {
+                hc.AddWidgetAsync("dev.test.multi").GetAwaiter().GetResult();
+                Sta.Pump();
+                Assert.Equal(MainWindow.BaseMinWidth, win.MinWidth);   // small widgets: the base minimum
+
+                hc.AddWidgetAsync("dev.test.wide").GetAwaiter().GetResult();
+                Sta.Pump();
+                Assert.True(win.MinWidth >= 260 + WidgetHostPanel.WidthOverhead, $"MinWidth was {win.MinWidth}");
+
+                hc.RemoveWidgetAsync(hc.Panel.Chromes.Values.Single(c => c.Instance.State.WidgetId == "dev.test.wide").InstanceId)
+                    .GetAwaiter().GetResult();
+                Sta.Pump();
+                Assert.Equal(MainWindow.BaseMinWidth, win.MinWidth);   // and it relaxes again
+            }
+            finally
+            {
+                hc.Details.CloseAll();
+                hc.Floating.CloseAll();
+                win.Close();
+            }
+        });
+    }
+
     [Fact]
     public void Added_widgets_are_stacked_in_compact_mode()
     {
@@ -162,9 +259,9 @@ public class HostUiTests
             for (var i = 0; i < 2; i++) rig.Controller.AddWidgetAsync("dev.test.multi").GetAwaiter().GetResult();
             Sta.Pump();
 
-            var panel = Interop.ScreenBounds(rig.Controller.Panel);
-            var first = Interop.ScreenBounds(rig.Chrome(0));
-            var second = Interop.ScreenBounds(rig.Chrome(1));
+            var panel = Interop.ScreenBoundsPx(rig.Controller.Panel);
+            var first = Interop.ScreenBoundsPx(rig.Chrome(0));
+            var second = Interop.ScreenBoundsPx(rig.Chrome(1));
             Assert.Equal(panel.Top, first.Top, 1);
             Assert.Equal(first.Bottom + 4, second.Top, 1); // ItemSpacing
             Assert.Equal(first.Top, panel.Top + Canvas.GetTop(rig.Chrome(0)), 1);
@@ -279,8 +376,8 @@ public class HostUiTests
             var start = rig.ScreenPointOn(a, 20, 20);
             rig.Controller.PressDown(a, start, 1);
             // Move far below the last widget, staying inside the host.
-            var end = new System.Windows.Point(start.X, Interop.ScreenBounds(rig.Controller.Panel).Bottom - 5);
-            rig.Controller.PressMove(a, new System.Windows.Point(start.X, start.Y + 10), true);
+            var end = new System.Windows.Point(start.X, Interop.ScreenBoundsPx(rig.Controller.Panel).Bottom - 5);
+            rig.Controller.PressMove(a, new System.Windows.Point(start.X, start.Y + 40), true);
             Assert.Equal(WidgetInteractionState.Dragging, rig.State(a).InteractionState);
             rig.Controller.PressMove(a, end, true);
             rig.Controller.PressUp(a, end);
@@ -300,7 +397,7 @@ public class HostUiTests
             using var rig = new Rig();
             for (var i = 0; i < 3; i++) rig.Controller.AddWidgetAsync("dev.test.multi").GetAwaiter().GetResult();
             Sta.Pump();
-            var panel = Interop.ScreenBounds(rig.Controller.Panel);
+            var panel = Interop.ScreenBoundsPx(rig.Controller.Panel);
             var first = rig.Chrome(0);
             var second = rig.Chrome(1);
             var last = rig.Chrome(2);
@@ -308,7 +405,7 @@ public class HostUiTests
 
             var start = rig.ScreenPointOn(last, 20, 20);
             rig.Controller.PressDown(last, start, 1);
-            rig.Controller.PressMove(last, new System.Windows.Point(start.X, start.Y - 10), true);
+            rig.Controller.PressMove(last, new System.Windows.Point(start.X, start.Y - 40), true);
             // Pointer at the very top of the Host -> insertion slot 0.
             var top = new System.Windows.Point(start.X, panel.Top + 2);
             rig.Controller.PressMove(last, top, true);
@@ -340,12 +437,12 @@ public class HostUiTests
             using var rig = new Rig();
             for (var i = 0; i < 3; i++) rig.Controller.AddWidgetAsync("dev.test.multi").GetAwaiter().GetResult();
             Sta.Pump();
-            var panel = Interop.ScreenBounds(rig.Controller.Panel);
+            var panel = Interop.ScreenBoundsPx(rig.Controller.Panel);
             var first = rig.Chrome(0);
             var last = rig.Chrome(2);
             var start = rig.ScreenPointOn(last, 20, 20);
             rig.Controller.PressDown(last, start, 1);
-            rig.Controller.PressMove(last, new System.Windows.Point(start.X, start.Y - 10), true);
+            rig.Controller.PressMove(last, new System.Windows.Point(start.X, start.Y - 40), true);
             rig.Controller.PressMove(last, new System.Windows.Point(start.X, panel.Top + 2), true);
             Assert.Equal(104, Canvas.GetTop(first), 1);
 
@@ -364,12 +461,12 @@ public class HostUiTests
             Sta.Pump();
 
             var a = rig.Chrome(0);
-            var host = Interop.ScreenBounds(rig.Controller.Panel);
+            var host = Interop.ScreenBoundsPx(rig.Controller.Panel);
             var start = rig.ScreenPointOn(a, 20, 20);
             var outside = new System.Windows.Point(host.Right + 300, host.Top + 50);
 
             rig.Controller.PressDown(a, start, 1);
-            rig.Controller.PressMove(a, new System.Windows.Point(start.X + 10, start.Y), true);
+            rig.Controller.PressMove(a, new System.Windows.Point(start.X + 40, start.Y), true);
             rig.Controller.PressMove(a, outside, true);
             rig.Controller.PressUp(a, outside);
             Sta.Pump();
@@ -385,7 +482,7 @@ public class HostUiTests
             var inside = new System.Windows.Point(host.Left + 30, host.Top + 5);
             var floatStart = rig.ScreenPointOn(a, 15, 15);
             rig.Controller.PressDown(a, floatStart, 1);
-            rig.Controller.PressMove(a, new System.Windows.Point(floatStart.X + 20, floatStart.Y), true);
+            rig.Controller.PressMove(a, new System.Windows.Point(floatStart.X + 40, floatStart.Y), true);
             rig.Controller.PressMove(a, inside, true);
             rig.Controller.PressUp(a, inside);
             Sta.Pump();
@@ -406,17 +503,17 @@ public class HostUiTests
             rig.Controller.AddWidgetAsync("dev.test.multi").GetAwaiter().GetResult();
             rig.Controller.AddWidgetAsync("dev.test.fixed").GetAwaiter().GetResult();
             Sta.Pump();
-            var host = Interop.ScreenBounds(rig.Controller.Panel);
+            var host = Interop.ScreenBoundsPx(rig.Controller.Panel);
             var outside = new System.Windows.Point(host.Right + 300, host.Top + 50);
 
             var a = rig.Chrome(0); // floatable
             var start = rig.ScreenPointOn(a, 20, 20);
             rig.Controller.PressDown(a, start, 1);
-            rig.Controller.PressMove(a, new System.Windows.Point(start.X + 10, start.Y), true);
+            rig.Controller.PressMove(a, new System.Windows.Point(start.X + 40, start.Y), true);
             Assert.False(rig.Controller.GhostVisible);
             rig.Controller.PressMove(a, outside, true);
             Assert.True(rig.Controller.GhostVisible);
-            rig.Controller.PressMove(a, new System.Windows.Point(start.X + 10, start.Y), true);
+            rig.Controller.PressMove(a, new System.Windows.Point(start.X + 40, start.Y), true);
             Assert.False(rig.Controller.GhostVisible);
             rig.Controller.PressMove(a, outside, true);
             rig.Controller.PressUp(a, outside);
@@ -427,7 +524,7 @@ public class HostUiTests
             Assert.Equal("dev.test.fixed", f.Instance.State.WidgetId);
             var fs = rig.ScreenPointOn(f, 20, 20);
             rig.Controller.PressDown(f, fs, 1);
-            rig.Controller.PressMove(f, new System.Windows.Point(fs.X + 10, fs.Y), true);
+            rig.Controller.PressMove(f, new System.Windows.Point(fs.X + 40, fs.Y), true);
             rig.Controller.PressMove(f, outside, true);
             Assert.False(rig.Controller.GhostVisible);
             Assert.True(rig.Controller.Panel.BlockedHintVisible);
@@ -562,6 +659,50 @@ public class HostUiTests
             Assert.Contains(layouts.Load()!.Entries, e => e.InstanceId == "ghost-1");
             Assert.Contains(layouts.Load()!.Entries, e => e.InstanceId == "keep-1");
             Assert.Single(rig.Controller.Model.DockedOrder);
+        });
+    }
+
+    [Fact]
+    public void Floating_widget_is_restored_at_the_dpi_size_of_its_monitor_and_inside_its_work_area()
+    {
+        Sta.Run(() =>
+        {
+            var layouts = new InMemoryLayoutStore();
+            layouts.Save(new LayoutSnapshot(LayoutSnapshot.CurrentSchema, null, new[]
+            {
+                new LayoutEntry("f-1", "dev.test.multi", DockState.Floating, 0, false, new WidgetRect(100, 100, 1, 1)),
+                new LayoutEntry("f-2", "dev.test.fixed2", DockState.Floating, 1, false, new WidgetRect(99999, 99999, 1, 1))
+            }));
+            var reg = new WidgetRegistry();
+            reg.Register(() => new TestWidget("dev.test.multi", true, true, true));
+            reg.Register(() => new TestWidget("dev.test.fixed2", true, true, true));
+            // a 200 % monitor: a 200x100 DIP widget must be 400x200 physical pixels
+            var monitors = new FakeMonitors
+            {
+                List = new() { new MonitorInfo("m", new WidgetRect(0, 0, 3840, 2080), 2.0, true) }
+            };
+            var hc = new HostController(reg, new InMemoryWidgetStateStore(), layouts, monitors: monitors) { UseMouseCapture = false };
+            var host = new Window { Content = hc.Panel, Width = 300, Height = 400, ShowActivated = false };
+            host.Show();
+            try
+            {
+                hc.RestoreAsync().GetAwaiter().GetResult();
+                Sta.Pump();
+
+                var w1 = Native.GetBoundsPx(Native.Handle(hc.Floating.Get("f-1")!));
+                Assert.Equal(400, w1.Width);
+                Assert.Equal(200, w1.Height);
+                Assert.Equal(100, w1.X);
+
+                var w2 = Native.GetBoundsPx(Native.Handle(hc.Floating.Get("f-2")!));
+                Assert.True(w2.X + w2.Width <= 3840 && w2.Y + w2.Height <= 2080, "off-screen position must be pulled back");
+                Assert.True(w2.X >= 0 && w2.Y >= 0);
+            }
+            finally
+            {
+                hc.Floating.CloseAll();
+                host.Close();
+            }
         });
     }
 

@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using Dora.Widget.Abstractions;
+using Dora.Widget.Host.HostWindow;
 using Dora.Widget.Runtime;
 
 namespace Dora.Widget.Host;
@@ -44,8 +45,11 @@ public sealed class FloatingWindowManager
 
     public FloatingWindow? Get(string instanceId) => _windows.GetValueOrDefault(instanceId);
 
-    /// <summary>Moves the chrome into a new floating window at <paramref name="bounds"/> (natural size).</summary>
-    public FloatingWindow Show(WidgetChrome chrome, WidgetRect bounds)
+    /// <summary>
+    /// Moves the chrome into a new floating window at <paramref name="boundsPx"/> (physical pixels, on
+    /// whichever monitor that is). The window content keeps its natural size in DIPs.
+    /// </summary>
+    public FloatingWindow Show(WidgetChrome chrome, WidgetRect boundsPx)
     {
         var id = chrome.InstanceId;
         if (_windows.TryGetValue(id, out var existing)) return existing;
@@ -60,12 +64,11 @@ public sealed class FloatingWindowManager
         {
             Width = natural.Width,
             Height = natural.Height,
-            Left = bounds.X,
-            Top = bounds.Y,
             WindowStartupLocation = WindowStartupLocation.Manual
         };
-        window.LocationChanged += (_, _) =>
-            _onBoundsChanged(id, new WidgetRect(window.Left, window.Top, window.Width, window.Height));
+        var hwnd = Native.Handle(window);
+        Native.SetBoundsPx(hwnd, boundsPx);   // before Show, so it never flashes at a default position
+        window.LocationChanged += (_, _) => _onBoundsChanged(id, Native.GetBoundsPx(hwnd));
         window.Closing += (_, _) =>
         {
             if (window.ClosingProgrammatically) return;
@@ -75,7 +78,17 @@ public sealed class FloatingWindowManager
         };
         _windows[id] = window;
         window.Show();
+        Native.SetBoundsPx(hwnd, boundsPx);   // WPF may have applied its own position/DPI size on Show
         return window;
+    }
+
+    /// <summary>Moves a floating window while it is dragged; position in physical pixels, size unchanged.</summary>
+    public void MoveTo(string instanceId, double xPx, double yPx)
+    {
+        if (!_windows.TryGetValue(instanceId, out var w)) return;
+        var hwnd = Native.Handle(w);
+        var b = Native.GetBoundsPx(hwnd);
+        Native.SetBoundsPx(hwnd, new WidgetRect(xPx, yPx, b.Width, b.Height));
     }
 
     /// <summary>Detaches the chrome from its floating window and closes the window.</summary>
@@ -209,10 +222,10 @@ public sealed class DetachGhostWindow : Window
         };
     }
 
-    public void MoveTo(double left, double top)
+    /// <summary>Positions the ghost in physical pixels with a size that matches the monitor under it.</summary>
+    public void MoveToPx(WidgetRect boundsPx)
     {
-        Left = left;
-        Top = top;
         if (!IsVisible) Show();
+        Native.SetBoundsPx(Native.Handle(this), boundsPx);
     }
 }
